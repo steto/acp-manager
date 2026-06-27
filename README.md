@@ -1,4 +1,4 @@
-# 🚀 ACP Manager — Gestione Completa Agenti ACP su Windows
+# ACP Manager — Gestione Completa Agenti ACP su Windows
 
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
