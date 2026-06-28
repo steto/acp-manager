@@ -4,11 +4,11 @@ on:
   push:
     branches: [master, main]
     paths:
-      - '*.ps1'
+      - '**/*.ps1'
   pull_request:
     branches: [master, main]
     paths:
-      - '*.ps1'
+      - '**/*.ps1'
   workflow_dispatch:
 
 jobs:
