@@ -1590,9 +1590,9 @@ function Press-Enter { Write-Host "`n  Press Enter to continue..." -NoNewline -F
 function Show-ScanMenu {
     do {
         Clear-Host
-        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
-        Write-Host "  │   🔍  Scan & Detection               │" -ForegroundColor Cyan
-        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
+        Write-Host "  |   🔍  Scan & Detection               |" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Quick Scan (installed/running only)"
         Write-Host "  [2] Detailed Scan (with health check)"
         Write-Host "  [3] Agent Info (detailed info on one agent)"
@@ -1616,9 +1616,9 @@ function Show-ScanMenu {
 function Show-InstallMenu {
     do {
         Clear-Host
-        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
-        Write-Host "  │   📦  Install & Update               │" -ForegroundColor Cyan
-        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
+        Write-Host "  |   📦  Install & Update               |" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] List Registry (all available agents)"
         Write-Host "  [2] Install an agent from registry"
         Write-Host "  [3] Update ALL installed agents"
@@ -1642,9 +1642,9 @@ function Show-InstallMenu {
 function Show-BridgeMenu {
     do {
         Clear-Host
-        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
-        Write-Host "  │   🔌  Bridge Management              │" -ForegroundColor Cyan
-        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
+        Write-Host "  |   🔌  Bridge Management              |" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Status (bridges + detected agents)"
         Write-Host "  [2] Start bridge(s)"
         Write-Host "  [3] Stop bridge(s)"
@@ -1670,9 +1670,9 @@ function Show-BridgeMenu {
 function Show-TunnelMenu {
     do {
         Clear-Host
-        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
-        Write-Host "  │   🌐  DevTunnel                      │" -ForegroundColor Cyan
-        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
+        Write-Host "  |   🌐  DevTunnel                      |" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Tunnel + Bridge (start tunnel + bridge)"
         Write-Host "  [2] Create Persistent Tunnel"
         Write-Host "  [3] List Tunnels"
@@ -1705,9 +1705,9 @@ function Show-TunnelMenu {
 function Show-SystemMenu {
     do {
         Clear-Host
-        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
-        Write-Host "  │   ⚙️   System                         │" -ForegroundColor Cyan
-        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
+        Write-Host "  |   ⚙️   System                         |" -ForegroundColor Cyan
+        Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Show Configuration"
         Write-Host "  [2] System Diagnostics"
         Write-Host "  [3] Show Logs"
