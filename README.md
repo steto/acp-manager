@@ -10,11 +10,21 @@
 
 ---
 
+## Requirements
+
+- **Windows 10/11** (uses `winget`, `Get-CimInstance Win32_Process` and Task Scheduler)
+- **PowerShell 5.1+** (Windows PowerShell). PowerShell 7 (`pwsh`) also works.
+- Optional, depending on which agents you install: `npm`/`node`, `uv`, `cargo`, `pip`, `dotnet`, `go`, `choco`, `scoop`, `winget`.
+
+> Looking for macOS/Linux support? Detection is Windows-focused today; the bridge start/stop logic is not yet portable.
+
+---
+
 ## Features
 
 | Capability | Description |
 |---|---|
-| **Agent Scan** | Detects 37+ ACP agents -- installed, running, version, health status |
+| **Agent Scan** | Detects every agent in the ACP registry -- installed, running, version, health status |
 | **Installation** | Installs any ACP agent from the official registry (npm, binary, uvx, cargo) |
 | **Updates** | Updates all outdated agents with a single command |
 | **Bridge Management** | Starts, stops, and manages opencode, kilocode, and cursor bridges |
@@ -68,7 +78,7 @@ Run `.\acp-manager.ps1` with no arguments to enter the interactive menu:
   |         ACP Manager v4.2 - Interactive        |
   +-----------------------------------------------+
 
-  [1] Scan & Detection       Scan 37+ agents, agent info, registry
+  [1] Scan & Detection       Scan all agents, agent info, registry
   [2] Install & Update       Install/update agents from registry
   [3] Bridge Management      Start, stop, restart, status, install
   [4] DevTunnel              Tunnel, create, list, info, delete
@@ -104,8 +114,9 @@ All CLI commands remain available alongside interactive mode.
 | `Scan` | `[-Detailed]` `[-OutputFormat Json]` | Full scan of all ACP agents |
 | `AgentInfo` | `-AgentId <id>` | Detailed information about a specific agent |
 | `Registry` | `[-UpdateRegistry]` | View the official ACP registry |
-| `InstallAgent` | `-AgentId <id>` | Install an agent from the registry |
-| `Update` | `-AgentId <id | all>` | Update agents to the latest version |
+| `InstallAgent` | `-AgentId <id>` `[-Yes]` | Install an agent from the registry |
+| `Uninstall` | `-AgentId <id>` `[-Yes]` | Uninstall an agent |
+| `Update` | `-AgentId <id | all>` `[-Yes]` | Update agents to the latest version |
 
 ### Bridge Management
 
@@ -138,30 +149,57 @@ All CLI commands remain available alongside interactive mode.
 | `LogClear` | | Clear logs |
 | `Autostart` | `-Bridge <name>` `[-Disable]` | Windows auto-start configuration |
 | `Mobile` | `[-Anonymous]` | Mobile integration guide |
-| `Watch` | | Continuous monitoring (10s refresh) |
+| `Watch` | `[-Interval <s>]` | Continuous monitoring (default 10s refresh) |
+| `Version` | `[-OutputFormat Json]` | Show ACP Manager version |
+| `UpdateSelf` | `[-Yes]` | Update this script to the latest release |
 | `Interactive` | | Launch interactive menu |
 | `Help` | | Show this help |
+
+### Global parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `-Bridge` | `all` | `opencode` \| `kilocode` \| `cursor` \| `all` |
+| `-Port` | config | Custom port for the bridge |
+| `-Profile` | `default` | Configuration profile to use |
+| `-OutputFormat` | `Text` | `Text` \| `Json` (structured JSON for `Scan`, `Status`, `Version`) |
+| `-Yes` | off | Skip confirmation prompts (automation / CI) |
+| `-Detailed` | off | Add health info (CPU, RAM, ports, network) |
+| `-LogLines` | `50` | Lines shown by `Logs` |
+| `-Interval` | `10` | Seconds between `Watch` refreshes |
+| `-UpdateRegistry` | off | Force a registry cache refresh |
 
 ---
 
 ## Agent Detection
 
-The detection engine uses 12+ methods to find every installed ACP agent:
+The detection engine uses 19+ methods to find every installed ACP agent:
 
 ```
  1. PATH / Binary     Get-Command for each executable
  2. npm global        npm list -g --depth=0 (120s cache)
  3. cargo             cargo install --list (120s cache)
- 4. pip               pip list --format=json
- 5. uvx               uv tool list
+ 4. pip               pip list --format=json (120s cache)
+ 5. uvx               uv tool list (120s cache)
  6. winget            winget list (30min cache)
- 7. choco             choco list -li
- 8. scoop             scoop list
- 9. dotnet            dotnet tool list -g
-10. go                go env GOBIN + binary search
+ 7. choco             choco list -li (120s cache)
+ 8. scoop             scoop list (120s cache)
+ 9. dotnet            dotnet tool list -g (120s cache)
+10. go                go env GOBIN + binary search (120s cache)
 11. Registry          Uninstall keys (HKLM, HKCU)
 12. KnownPaths        Recursive search in common directories
+13. npm (enhanced)    package-name aware fallback
+14. uvx (enhanced)    package-name aware fallback
+15. pip (enhanced)    exact package-name match
+16. winget (enhanced) word-boundary id match
+17. choco (enhanced)  name-token match
+18. dotnet (enhanced) word-boundary id match
+19. go (enhanced)     GOBIN binary-name match
 ```
+
+All package-manager queries are cached per session, so scanning many agents
+runs each manager at most once. ID matching is case-insensitive and
+word-boundary based to avoid false positives for short ids (`go`, `uv`, ...).
 
 ### Scan examples
 
@@ -188,7 +226,7 @@ With `-Detailed`, each running agent reports:
 
 ## Installing Agents from Registry
 
-Any ACP agent can be installed directly from the [official registry](https://github.com/agentclientprotocol/registry), which contains 37+ agents with full metadata including name, version, license, description, distribution methods, and dependencies.
+Any ACP agent can be installed directly from the [official registry](https://github.com/agentclientprotocol/registry), which lists all ACP-compatible agents with full metadata including name, version, license, description, distribution methods, and dependencies.
 
 ```powershell
 # View all available agents
@@ -405,9 +443,10 @@ acp-manager.ps1
     24h cache with auto-expiry
     Forced update via -UpdateRegistry
   Detection Engine
-    Get-AgentDetection (12+ methods)
-    Get-EnhancedDetection (wrapper with add-on methods)
-    Intelligent caching (npm 120s, cargo 120s, winget 30min)
+    Get-AgentDetection (PATH + registry + known paths)
+    Get-EnhancedDetection (wrapper with 7+ package-manager methods)
+    Intelligent caching (npm/pip/uvx/choco/scoop/dotnet/go 120s, winget 30min)
+    Word-boundary id matching (no false positives on short ids)
     Version comparison (current/outdated/newer)
   Bridge Management
     opencode        Start/Stop/Restart/Status
@@ -449,8 +488,11 @@ acp-manager.ps1
 # Agent information
 .\acp-manager.ps1 -Action AgentInfo -AgentId gemini
 
-# Install an agent from registry
-.\acp-manager.ps1 -Action InstallAgent -AgentId claude-acp
+# Install an agent from registry (non-interactive)
+.\acp-manager.ps1 -Action InstallAgent -AgentId claude-acp -Yes
+
+# Uninstall an agent
+.\acp-manager.ps1 -Action Uninstall -AgentId gemini
 
 # Install bridges
 .\acp-manager.ps1 -Action Install -Bridge all
@@ -458,14 +500,19 @@ acp-manager.ps1
 # Start bridge
 .\acp-manager.ps1 -Action Start -Bridge opencode
 
-# Status
+# Status (text or JSON)
 .\acp-manager.ps1 -Action Status
+.\acp-manager.ps1 -Action Status -OutputFormat Json | ConvertFrom-Json
 
 # Remote tunnel
 .\acp-manager.ps1 -Action Tunnel -Bridge opencode -Anonymous
 
 # Update all agents
 .\acp-manager.ps1 -Action Update -AgentId all
+
+# Version and self-update
+.\acp-manager.ps1 -Action Version
+.\acp-manager.ps1 -Action UpdateSelf -Yes
 
 # Diagnostics
 .\acp-manager.ps1 -Action Diag
@@ -476,8 +523,8 @@ acp-manager.ps1
 # View logs
 .\acp-manager.ps1 -Action Logs -LogLines 100
 
-# Watch mode (live monitoring)
-.\acp-manager.ps1 -Action Watch
+# Watch mode (live monitoring, 5s refresh)
+.\acp-manager.ps1 -Action Watch -Interval 5
 ```
 
 ---
