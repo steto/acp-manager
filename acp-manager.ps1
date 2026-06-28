@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     ACP Manager v4.2 - Bridge Management + Agent Detection Engine
 .DESCRIPTION
@@ -1591,7 +1591,7 @@ function Show-ScanMenu {
     do {
         Clear-Host
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
-        Write-Host "  |   🔍  Scan & Detection               |" -ForegroundColor Cyan
+        Write-Host "  |         SCAN AND DETECTION               |" -ForegroundColor Cyan
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Quick Scan (installed/running only)"
         Write-Host "  [2] Detailed Scan (with health check)"
@@ -1617,7 +1617,7 @@ function Show-InstallMenu {
     do {
         Clear-Host
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
-        Write-Host "  |   📦  Install & Update               |" -ForegroundColor Cyan
+        Write-Host "  |         INSTALL AND UPDATE               |" -ForegroundColor Cyan
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] List Registry (all available agents)"
         Write-Host "  [2] Install an agent from registry"
@@ -1643,7 +1643,7 @@ function Show-BridgeMenu {
     do {
         Clear-Host
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
-        Write-Host "  |   🔌  Bridge Management              |" -ForegroundColor Cyan
+        Write-Host "  |         BRIDGE MANAGEMENT                |" -ForegroundColor Cyan
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Status (bridges + detected agents)"
         Write-Host "  [2] Start bridge(s)"
@@ -1671,7 +1671,7 @@ function Show-TunnelMenu {
     do {
         Clear-Host
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
-        Write-Host "  |   🌐  DevTunnel                      |" -ForegroundColor Cyan
+        Write-Host "  |         DEV TUNNEL                      |" -ForegroundColor Cyan
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Tunnel + Bridge (start tunnel + bridge)"
         Write-Host "  [2] Create Persistent Tunnel"
@@ -1706,7 +1706,7 @@ function Show-SystemMenu {
     do {
         Clear-Host
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
-        Write-Host "  |   ⚙️   System                         |" -ForegroundColor Cyan
+        Write-Host "  |         SYSTEM                           |" -ForegroundColor Cyan
         Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
         Write-Host "`n  [1] Show Configuration"
         Write-Host "  [2] System Diagnostics"
@@ -1801,3 +1801,4 @@ switch ($Action) {
     'Interactive'   { Action-Interactive }
     'Help'          { Show-Help }
 }
+
