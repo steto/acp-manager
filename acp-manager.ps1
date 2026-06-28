@@ -2,44 +2,44 @@
 .SYNOPSIS
     ACP Manager v4.2 - Bridge Management + Agent Detection Engine
 .DESCRIPTION
-    Gestione completa bridge ACP + rilevazione + installazione agenti.
+    Complete ACP bridge management + agent detection + installation.
     
     BRIDGE: Init, Install, Start, Stop, Restart, Status, Tunnel, Autostart
-    DETECTION: Scan, AgentInfo, Registry, InstallAgent (37 agent dal registry ACP ufficiale)
-    SISTEMA: Config, Diag, Logs, LogClear, Mobile, Help
+    DETECTION: Scan, AgentInfo, Registry, InstallAgent (37 agents from official ACP registry)
+    SYSTEM: Config, Diag, Logs, LogClear, Mobile, Interactive, Help
 .PARAMETER Action
-    Azione: Init, Install, InstallAgent, Start, Stop, Restart, Status, Scan, AgentInfo,
+    Action: Init, Install, InstallAgent, Start, Stop, Restart, Status, Scan, AgentInfo,
             Registry, Tunnel, TunnelCreate, TunnelList, TunnelInfo, TunnelDelete,
-            Update, Logs, LogClear, Config, Diag, Autostart, Mobile, Watch, RegistryUpdate, Help
+            Update, Logs, LogClear, Config, Diag, Autostart, Mobile, Watch, Interactive, Help
 .PARAMETER Bridge
     Bridge: opencode, kilocode, cursor, all
 .PARAMETER AgentId
-    ID agente dal registry ACP (es. gemini, claude-acp, devin)
+    Agent ID from ACP registry (e.g. gemini, claude-acp, devin)
 .PARAMETER Port
-    Porta personalizzata
+    Custom port
 .PARAMETER TunnelId
-    ID DevTunnel
+    DevTunnel ID
 .PARAMETER OutputFormat
     Text | Json
 .PARAMETER LogLines
-    Righe log (default: 50)
+    Log lines (default: 50)
 .PARAMETER Profile
-    Profilo config
+    Config profile
 .PARAMETER Anonymous
-    Tunnel anonimo (switch)
+    Anonymous tunnel (switch)
 .PARAMETER Disable
-    Disabilita auto-avvio (switch)
+    Disable auto-start (switch)
 .PARAMETER UpdateRegistry
-    Forza aggiornamento registry (switch)
+    Force registry update (switch)
 .PARAMETER Detailed
-    Output dettagliato (switch)
+    Detailed output (switch)
 #>
 
 param(
-    [ValidateSet('Init','Install','Start','Stop','Restart','Update','Status','Scan','AgentInfo','Registry','InstallAgent','Watch','RegistryUpdate',
+    [ValidateSet('Init','Install','Start','Stop','Restart','Update','Status','Scan','AgentInfo','Registry','InstallAgent','Watch',
                  'Tunnel','TunnelCreate','TunnelList','TunnelInfo','TunnelDelete',
-                 'Logs','LogClear','Config','Diag','Autostart','Mobile','Help')]
-    [string]$Action = 'Help',
+                 'Logs','LogClear','Config','Diag','Autostart','Mobile','Interactive','Help')]
+    [string]$Action = 'Interactive',
     [ValidateSet('opencode','kilocode','cursor','all')]
     [string]$Bridge = 'all',
     [string]$AgentId = '',
@@ -56,7 +56,7 @@ param(
 )
 
 # ============================================================
-# CONFIGURAZIONE
+# CONFIGURATION
 # ============================================================
 
 $Script:Version = '4.2.0'
@@ -64,7 +64,7 @@ $Script:ConfigDir = "$env:USERPROFILE\.acp-bridges"
 $Script:ConfigFile = "$Script:ConfigDir\config.json"
 $Script:RegistryCacheFile = "$Script:ConfigDir\registry-cache.json"
 $Script:RegistryUrl = 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json'
-$Script:DefaultLogPath = "$env:TEMP\acp-bridges.log"
+$Script:DefaultLogPath = "$env:TEMP\acp-manager.log"
 $Script:LogFile = $Script:DefaultLogPath
 $Script:LogLevel = 'INFO'
 
@@ -192,7 +192,7 @@ function Test-PortOpen {
 }
 
 # ============================================================
-# CONFIGURAZIONE PERSISTENTE
+# PERSISTENT CONFIGURATION
 # ============================================================
 
 function Get-Config {
@@ -205,7 +205,7 @@ function Get-Config {
                 $Script:LogLevel = if ($p.log_level) { $p.log_level } else { 'INFO' }
                 return $cfg
             }
-        } catch { Write-Log "Config errato, uso default" -Level DEBUG }
+        } catch { Write-Log "Config invalid, using defaults" -Level DEBUG }
     }
     return $null
 }
@@ -216,7 +216,7 @@ function Save-Config {
         New-Item -ItemType Directory -Path $Script:ConfigDir -Force | Out-Null
     }
     $Config | ConvertTo-Json -Depth 10 | Set-Content $Script:ConfigFile -Force
-    Write-Log "Config salvato: $Script:ConfigFile" -Level OK
+    Write-Log "Config saved: $Script:ConfigFile" -Level OK
 }
 
 function New-DefaultConfig {
@@ -248,7 +248,7 @@ function Get-BridgePort {
 # ============================================================
 
 function Update-RegistryCache {
-    Write-Log "Download registry ACP..." -Level INFO
+    Write-Log "Downloading ACP registry..." -Level INFO
     try {
         $tmpFile = Join-Path $env:TEMP "acp-registry-$([System.IO.Path]::GetRandomFileName()).json"
         Invoke-WebRequest -Uri $Script:RegistryUrl -OutFile $tmpFile -UseBasicParsing -TimeoutSec 15
@@ -257,13 +257,13 @@ function Update-RegistryCache {
         }
         Move-Item $tmpFile $Script:RegistryCacheFile -Force
         $reg = Get-Content $Script:RegistryCacheFile -Raw | ConvertFrom-Json
-        Write-Log "Registry aggiornato: $($reg.agents.Count) agent" -Level OK
+        Write-Log "Registry updated: $($reg.agents.Count) agents" -Level OK
         return $reg
     } catch {
-        Write-Log "Download registry fallito: $_" -Level WARN
+        Write-Log "Registry download failed: $_" -Level WARN
         if (Test-Path $Script:RegistryCacheFile) {
             $reg = Get-Content $Script:RegistryCacheFile -Raw | ConvertFrom-Json
-            Write-Log "Usata cache locale: $($reg.agents.Count) agent" -Level INFO
+            Write-Log "Using local cache: $($reg.agents.Count) agents" -Level INFO
             return $reg
         }
         return $null
@@ -274,9 +274,9 @@ function Get-CachedRegistry {
     if ($UpdateRegistry) { return Update-RegistryCache }
     if (Test-Path $Script:RegistryCacheFile) {
         $age = [int]((Get-Date) - (Get-Item $Script:RegistryCacheFile).CreationTime).TotalHours
-        if ($age -gt 24) { Write-Log "Cache scaduta ($age h). Aggiorno..." -Level INFO; return Update-RegistryCache }
+        if ($age -gt 24) { Write-Log "Cache expired ($age h). Updating..." -Level INFO; return Update-RegistryCache }
         try { return Get-Content $Script:RegistryCacheFile -Raw | ConvertFrom-Json }
-        catch { Write-Log "Cache corrotta, ri-scarico..." -Level WARN; return Update-RegistryCache }
+        catch { Write-Log "Cache corrupted, re-downloading..." -Level WARN; return Update-RegistryCache }
     }
     return Update-RegistryCache
 }
@@ -456,62 +456,62 @@ function Get-AgentDetection {
 }
 
 # ============================================================
-# AZIONE: INIT
+# ACTION: INIT
 # ============================================================
 
 function Action-Init {
-    Write-Section "Configurazione Iniziale"
+    Write-Section "Initial Setup"
     if (Test-Path $Script:ConfigFile) {
-        Write-StatusDot 'INFO' 'INFO' "Config esistente: $Script:ConfigFile"
-        $r = Read-Host "Sovrascrivere? (s/N)"
-        if ($r -ne 's') { Write-Log "Init annullato." -Level INFO; return }
+        Write-StatusDot 'INFO' 'INFO' "Existing config: $Script:ConfigFile"
+        $r = Read-Host "Overwrite? (y/N)"
+        if ($r -ne 'y' -and $r -ne 's') { Write-Log "Init cancelled." -Level INFO; return }
     }
     $cfg = New-DefaultConfig
-    Write-Host "`nPorte bridge (invio per default):" -ForegroundColor Yellow
+    Write-Host "`nBridge ports (Enter for default):" -ForegroundColor Yellow
     foreach ($b in @('opencode','kilocode','cursor')) {
         $def = $Script:BridgePortsDefault[$b]; $r = Read-Host "  $b [$def]"
         if ($r -match '^\d+$') { $cfg.profiles.default.ports.$b = [int]$r }
     }
-    $r = Read-Host "`nAbilitare auto-restart? (s/N)"; $cfg.profiles.default.auto_restart = ($r -eq 's')
-    $r = Read-Host "Modalita mobile? (s/N)"; $cfg.profiles.default.mobile_mode = ($r -eq 's')
-    $r = Read-Host "Tunnel anonimo default? (s/N)"; $cfg.profiles.default.anonymous_tunnel = ($r -eq 's')
-    Save-Config $cfg; Write-Log "Configurazione completata!" -Level OK
+    $r = Read-Host "`nEnable auto-restart? (y/N)"; $cfg.profiles.default.auto_restart = ($r -eq 'y' -or $r -eq 's')
+    $r = Read-Host "Mobile mode? (y/N)"; $cfg.profiles.default.mobile_mode = ($r -eq 'y' -or $r -eq 's')
+    $r = Read-Host "Anonymous tunnel default? (y/N)"; $cfg.profiles.default.anonymous_tunnel = ($r -eq 'y' -or $r -eq 's')
+    Save-Config $cfg; Write-Log "Configuration complete!" -Level OK
 
-    Write-Section "Verifica Prerequisiti"
+    Write-Section "Prerequisites Check"
     $allOk = $true
     foreach ($cmd in @('npm','node','winget','git')) {
-        if (Test-Cmd $cmd) { Write-StatusDot 'OK' 'OK' $cmd } else { Write-StatusDot 'WARN' 'WARN' "$cmd non trovato"; $allOk = $false }
+        if (Test-Cmd $cmd) { Write-StatusDot 'OK' 'OK' $cmd } else { Write-StatusDot 'WARN' 'WARN' "$cmd not found"; $allOk = $false }
     }
     if (Test-Cmd 'devtunnel') { Write-StatusDot 'OK' 'OK' 'devtunnel CLI' }
-    else { Write-StatusDot 'WARN' 'WARN' "devtunnel non installato" }
-    if ($allOk) { Write-Log "Tutti i prerequisiti presenti!" -Level OK }
-    else { Write-Log "Strumenti mancanti - installa con Install" -Level WARN }
-    Write-Host "`n  Prossimi passi: .\acp-manager.ps1 -Action Scan /.\acp-manager.ps1 -Action Install -Bridge all`n" -ForegroundColor Cyan
+    else { Write-StatusDot 'WARN' 'WARN' "devtunnel not installed" }
+    if ($allOk) { Write-Log "All prerequisites available!" -Level OK }
+    else { Write-Log "Missing tools - install with Install action" -Level WARN }
+    Write-Host "`n  Next steps: .\acp-manager.ps1 -Action Scan / .\acp-manager.ps1 -Action Install -Bridge all`n" -ForegroundColor Cyan
 }
 
 # ============================================================
-# AZIONE: INSTALL
+# ACTION: INSTALL
 # ============================================================
 
 function Action-Install {
-    Write-Section "Installazione Bridge"
+    Write-Section "Bridge Installation"
     $bridges = if ($Bridge -eq 'all') { @('opencode','kilocode','cursor') } else { @($Bridge) }
     foreach ($b in $bridges) {
         $name = $Script:BridgeNames[$b]; $cmd = $Script:BridgeInstall[$b]
-        if (-not $cmd) { Write-StatusDot 'INFO' 'INFO' "$name - incluso in Cursor v0.45+"; continue }
+        if (-not $cmd) { Write-StatusDot 'INFO' 'INFO' "$name - included in Cursor v0.45+"; continue }
         $requires = if ($cmd -match '^npm') { 'npm' } else { 'npx' }
-        if (-not (Test-Cmd $requires)) { Write-StatusDot 'ERR' 'ERR' "$requires necessario per $name"; continue }
+        if (-not (Test-Cmd $requires)) { Write-StatusDot 'ERR' 'ERR' "$requires required for $name"; continue }
         $checkCmd = ($Script:BridgeCmds[$b].check -split '\s')[0]
-        if (Test-Cmd $checkCmd) { Write-StatusDot 'OK' 'OK' "$name gia installato"; continue }
-        Write-Log "Installazione $name..." -Level INFO
+        if (Test-Cmd $checkCmd) { Write-StatusDot 'OK' 'OK' "$name already installed"; continue }
+        Write-Log "Installing $name..." -Level INFO
         try {
             $r = Invoke-Expression $cmd 2>&1
-            if ($LASTEXITCODE -eq 0) { Write-StatusDot 'OK' 'OK' "$name installato"; Write-Log "$name installato" -Level OK }
-            else { Write-StatusDot 'ERR' 'ERR' "${name}: $r"; Write-Log "Errore ${name}: $r" -Level ERROR }
-        } catch { Write-StatusDot 'ERR' 'ERR' "${name}: $_"; Write-Log "Errore ${name}: $_" -Level ERROR }
+            if ($LASTEXITCODE -eq 0) { Write-StatusDot 'OK' 'OK' "$name installed"; Write-Log "$name installed" -Level OK }
+            else { Write-StatusDot 'ERR' 'ERR' "${name}: $r"; Write-Log "Error ${name}: $r" -Level ERROR }
+        } catch { Write-StatusDot 'ERR' 'ERR' "${name}: $_"; Write-Log "Error ${name}: $_" -Level ERROR }
     }
     Write-Section "DevTunnel"
-    if (Test-Cmd 'devtunnel') { Write-StatusDot 'OK' 'OK' 'devtunnel CLI gia installato' }
+    if (Test-Cmd 'devtunnel') { Write-StatusDot 'OK' 'OK' 'devtunnel CLI already installed' }
     else { Install-DevTunnel }
 }
 
@@ -525,16 +525,16 @@ function Install-DevTunnel {
         New-Item -ItemType Directory -Path $destDir -Force | Out-Null; Move-Item $tmp $dest -Force
         $p = [Environment]::GetEnvironmentVariable('PATH','User')
         if ($p -notlike "*$destDir*") { [Environment]::SetEnvironmentVariable('PATH',"$p;$destDir",'User'); $env:PATH+=";$destDir" }
-        Write-StatusDot 'OK' 'OK' "DevTunnel installato"; return $true
-    } catch { Write-StatusDot 'ERR' 'ERR' "Download fallito: $_"; return $false }
+        Write-StatusDot 'OK' 'OK' "DevTunnel installed"; return $true
+    } catch { Write-StatusDot 'ERR' 'ERR' "Download failed: $_"; return $false }
 }
 
 # ============================================================
-# AZIONE: START / STOP / RESTART
+# ACTION: START / STOP / RESTART
 # ============================================================
 
 function Action-Start {
-    Write-Section "Avvio Bridge"
+    Write-Section "Starting Bridge"
     $bridges = if ($Bridge -eq 'all') { @('opencode','kilocode','cursor') } else { @($Bridge) }
     foreach ($b in $bridges) { Start-Bridge -Name $b -DisplayName $Script:BridgeNames[$b] -Port (Get-BridgePort -BridgeName $b) }
 }
@@ -543,23 +543,23 @@ function Start-Bridge {
     param([string]$Name, [string]$DisplayName, [int]$Port)
     $check = $Script:BridgeCmds[$Name].check; $startCmd = $Script:BridgeCmds[$Name].start -f $Port; $checkExe = ($check -split '\s')[0]
     $existing = Get-ProcessByFilter -Filter $check
-    if ($existing) { $mem = [Math]::Round($existing.WorkingSetSize/1MB,1); Write-StatusDot 'RUN' 'RUN' "${DisplayName} gia attivo (PID:$($existing.ProcessId) RAM:${mem}MB)"; return $existing }
-    if (-not (Test-Cmd $checkExe)) { Write-StatusDot 'ERR' 'ERR' "${DisplayName} non installato"; return $null }
+    if ($existing) { $mem = [Math]::Round($existing.WorkingSetSize/1MB,1); Write-StatusDot 'RUN' 'RUN' "${DisplayName} already active (PID:$($existing.ProcessId) RAM:${mem}MB)"; return $existing }
+    if (-not (Test-Cmd $checkExe)) { Write-StatusDot 'ERR' 'ERR' "${DisplayName} not installed"; return $null }
     try {
-        if ($Name -eq 'cursor') { Write-StatusDot 'INFO' 'INFO' "${DisplayName} - configura da UI"; return $null }
+        if ($Name -eq 'cursor') { Write-StatusDot 'INFO' 'INFO' "${DisplayName} - configure from UI"; return $null }
         $lf = Join-Path $env:TEMP "bridge-$Name.log"
         $p = Start-Process cmd.exe -ArgumentList "/c $startCmd" -WindowStyle Hidden -PassThru -RedirectStandardOutput $lf -RedirectStandardError $lf
         Start-Sleep -Seconds 2
-        if ($p -and !$p.HasExited) { Write-StatusDot 'RUN' 'RUN' "${DisplayName} avviato (PID:$($p.Id), porta:$Port)"; Write-Log "${DisplayName} avviato PID:$($p.Id)" -Level OK; return $p }
-        else { Write-StatusDot 'ERR' 'ERR' "${DisplayName} avvio fallito"; return $null }
+        if ($p -and !$p.HasExited) { Write-StatusDot 'RUN' 'RUN' "${DisplayName} started (PID:$($p.Id), port:$Port)"; Write-Log "${DisplayName} started PID:$($p.Id)" -Level OK; return $p }
+        else { Write-StatusDot 'ERR' 'ERR' "${DisplayName} start failed"; return $null }
     } catch { Write-StatusDot 'ERR' 'ERR' "${DisplayName}: $_"; return $null }
 }
 
 function Action-Stop {
-    Write-Section "Arresto Bridge"
+    Write-Section "Stopping Bridge"
     $bridges = if ($Bridge -eq 'all') { @('opencode','kilocode','cursor','devtunnel') } else { @($Bridge) }
     foreach ($b in $bridges) {
-        if ($b -eq 'devtunnel') { $d = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue; if ($d) { $d | Stop-Process -Force; Write-StatusDot 'STOP' 'STOP' 'DevTunnel fermato' } else { Write-StatusDot 'STOP' 'STOP' 'DevTunnel non attivo' }; continue }
+        if ($b -eq 'devtunnel') { $d = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue; if ($d) { $d | Stop-Process -Force; Write-StatusDot 'STOP' 'STOP' 'DevTunnel stopped' } else { Write-StatusDot 'STOP' 'STOP' 'DevTunnel not active' }; continue }
         Stop-Bridge -Name $b
     }
 }
@@ -568,20 +568,20 @@ function Stop-Bridge {
     param([string]$Name)
     $display = $Script:BridgeNames[$Name]; $check = $Script:BridgeCmds[$Name].check
     $p = Get-ProcessByFilter -Filter $check; if (-not $p) { $p = Get-Process -Name $Name -ErrorAction SilentlyContinue }
-    if ($p) { foreach ($x in $p) { $pid = if ($x.ProcessId) { $x.ProcessId } else { $x.Id }; Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Write-StatusDot 'STOP' 'STOP' "$display fermato (PID:$pid)"; Write-Log "$display fermato" -Level INFO } }
-    else { Write-StatusDot 'STOP' 'STOP' "$display non attivo" }
+    if ($p) { foreach ($x in $p) { $pid = if ($x.ProcessId) { $x.ProcessId } else { $x.Id }; Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Write-StatusDot 'STOP' 'STOP' "$display stopped (PID:$pid)"; Write-Log "$display stopped" -Level INFO } }
+    else { Write-StatusDot 'STOP' 'STOP' "$display not active" }
 }
 
 function Action-Restart {
-    Write-Section "Riavvio Bridge"; $savedBridge = $Bridge; Action-Stop; Start-Sleep -Seconds 2; $Bridge = $savedBridge; Action-Start
+    Write-Section "Restarting Bridge"; $savedBridge = $Bridge; Action-Stop; Start-Sleep -Seconds 2; $Bridge = $savedBridge; Action-Start
 }
 
 # ============================================================
-# AZIONE: STATUS
+# ACTION: STATUS
 # ============================================================
 
 function Action-Status {
-    Write-Section "Stato Bridge ACP"
+    Write-Section "ACP Bridge Status"
     $bridges = @('opencode','kilocode','cursor'); $rows = @()
     foreach ($b in $bridges) {
         $name = $Script:BridgeNames[$b]; $check = $Script:BridgeCmds[$b].check
@@ -589,44 +589,44 @@ function Action-Status {
         $p = Get-ProcessByFilter -Filter $check; $installed = Test-Cmd $checkExe
         if ($p) {
             $mem = [Math]::Round($p.WorkingSetSize/1MB,1); $uptime = Get-ProcessUptime -Process $p; $healthy = Test-PortOpen -Port $bp
-            $healthIcon = if ($healthy) { 'TCP OK' } else { 'No resp.' }
-            $rows += [PSCustomObject]@{ Bridge=$name; PID=$p.ProcessId; Porta=$bp; RAM="${mem}MB"; Stato='Attivo'; Salute=$healthIcon; Uptime=$uptime }
-        } else { $stato = if ($installed) { 'Fermo' } else { 'Non install.' }
-            $rows += [PSCustomObject]@{ Bridge=$name; PID='-'; Porta=$bp; RAM='-'; Stato=$stato; Salute='-'; Uptime='-' }
+            $healthIcon = if ($healthy) { 'TCP OK' } else { 'No response' }
+            $rows += [PSCustomObject]@{ Bridge=$name; PID=$p.ProcessId; Port=$bp; RAM="${mem}MB"; Status='Running'; Health=$healthIcon; Uptime=$uptime }
+        } else { $stato = if ($installed) { 'Stopped' } else { 'Not installed' }
+            $rows += [PSCustomObject]@{ Bridge=$name; PID='-'; Port=$bp; RAM='-'; Status=$stato; Health='-'; Uptime='-' }
         }
     }
-    Write-Table -Data $rows -Properties @('Bridge','PID','Porta','RAM','Stato','Salute','Uptime') -Headers @('Bridge','PID','Porta','RAM','Stato','Health','Uptime')
+    Write-Table -Data $rows -Properties @('Bridge','PID','Port','RAM','Status','Health','Uptime') -Headers @('Bridge','PID','Port','RAM','Status','Health','Uptime')
     $t = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue
-    if ($t) { Write-StatusDot 'RUN' 'RUN' "DevTunnel attivo (PID:$($t.Id))" }
-    else { if (Test-Cmd 'devtunnel') { Write-StatusDot 'STOP' 'STOP' 'DevTunnel fermo' } else { Write-StatusDot 'INFO' 'INFO' 'DevTunnel non installato' } }
+    if ($t) { Write-StatusDot 'RUN' 'RUN' "DevTunnel running (PID:$($t.Id))" }
+    else { if (Test-Cmd 'devtunnel') { Write-StatusDot 'STOP' 'STOP' 'DevTunnel stopped' } else { Write-StatusDot 'INFO' 'INFO' 'DevTunnel not installed' } }
 
     $reg = Get-CachedRegistry
     if ($reg) {
-        Write-Section "Agenti Registry ACP" "Cyan"
+        Write-Section "ACP Registry Agents" "Cyan"
         $found = @()
         foreach ($a in $reg.agents) {
             $det = Get-EnhancedDetection -Agent $a
             if ($det.Installed) {
                 $v = if ($det.InstalledVersion) { $det.InstalledVersion.Substring(0, [Math]::Min(12, $det.InstalledVersion.Length)) } else { '-' }
-                $found += [PSCustomObject]@{ Agente=$det.Name; Stato=$det.StatusIcon; Versione=$v; Metodo=$det.InstallMethod }
+                $found += [PSCustomObject]@{ Agent=$det.Name; Status=$det.StatusIcon; Version=$v; Method=$det.InstallMethod }
             }
         }
-        if ($found.Count -gt 0) { Write-Table -Data $found -Properties @('Agente','Stato','Versione','Metodo') }
-        else { Write-StatusDot 'INFO' 'INFO' 'Nessun agente ACP aggiuntivo' }
+        if ($found.Count -gt 0) { Write-Table -Data $found -Properties @('Agent','Status','Version','Method') }
+        else { Write-StatusDot 'INFO' 'INFO' 'No additional ACP agents found' }
     }
     Write-Host "`n  Log: $($Script:LogFile)" -ForegroundColor DarkGray; Write-Host "  Config: $($Script:ConfigFile)" -ForegroundColor DarkGray
 }
 
 # ============================================================
-# AZIONE: SCAN
+# ACTION: SCAN
 # ============================================================
 
 function Action-Scan {
-    Write-Section "ACP Agent Scan - Rilevazione Sistema"
+    Write-Section "ACP Agent Scan - System Detection"
     $reg = Get-CachedRegistry
-    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry non disponibile'; return }
+    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return }
 
-    $agents = $reg.agents; Write-Log "Scansione $($agents.Count) agent..." -Level INFO
+    $agents = $reg.agents; Write-Log "Scanning $($agents.Count) agents..." -Level INFO
     $results = @()
     $totalTime = Measure-Command {
         $count = 0
@@ -638,92 +638,93 @@ function Action-Scan {
     }
     Clear-ScanProgress
     $installed = $results | Where-Object { $_.Installed }; $running = $results | Where-Object { $_.Running }
-    Write-Host "`n  Risultati:" -ForegroundColor Cyan
-    Write-Host "    Agenti registry: $($agents.Count)" -ForegroundColor White
-    Write-Host "    Installati: $($installed.Count)" -ForegroundColor Green
-    Write-Host "    In esecuzione: $($running.Count)" -ForegroundColor Green
-    Write-Host "    Tempo: $([Math]::Round($totalTime.TotalSeconds,1))s" -ForegroundColor DarkGray
+    Write-Host "`n  Results:" -ForegroundColor Cyan
+    Write-Host "    Registry agents: $($agents.Count)" -ForegroundColor White
+    Write-Host "    Installed: $($installed.Count)" -ForegroundColor Green
+    Write-Host "    Running: $($running.Count)" -ForegroundColor Green
+    Write-Host "    Time: $([Math]::Round($totalTime.TotalSeconds,1))s" -ForegroundColor DarkGray
 
     if ($Detailed) {
-        Write-Section "Installati / In Esecuzione" "Green"
-        if ($installed.Count -gt 0) { Write-Table -Data $installed -Properties @('Name','StatusIcon','Status','Version','VersionStatus','InstallMethod','RAM_MB','CPU_Pct','Ports','Uptime') -Headers @('Agente',' ','Stato','Versione','Agg.','Metodo','RAM','CPU','Porte','Uptime') }
-        Write-Section "Tutti gli Agenti" "Cyan"
-        Write-Table -Data $results -Properties @('Name','StatusIcon','Status','Version','License','InstallMethod') -Headers @('Agente',' ','Stato','Versione','Licenza','Installazione')
+        Write-Section "Installed / Running" "Green"
+        if ($installed.Count -gt 0) { Write-Table -Data $installed -Properties @('Name','StatusIcon','Status','Version','VersionStatus','InstallMethod','RAM_MB','CPU_Pct','Ports','Uptime') -Headers @('Agent',' ','Status','Version','Update','Method','RAM','CPU','Ports','Uptime') }
+        Write-Section "All Agents" "Cyan"
+        Write-Table -Data $results -Properties @('Name','StatusIcon','Status','Version','License','InstallMethod') -Headers @('Agent',' ','Status','Version','License','Installation')
     } else {
-        Write-Table -Data $results -Properties @('Name','StatusIcon','Status','Version','VersionStatus','InstallMethod') -Headers @('Agente',' ','Stato','Versione','Agg.','Installazione')
+        Write-Table -Data $results -Properties @('Name','StatusIcon','Status','Version','VersionStatus','InstallMethod') -Headers @('Agent',' ','Status','Version','Update','Installation')
     }
-    Write-Host "`n  Usa -Detailed per health check (CPU, rete, porte, I/O)." -ForegroundColor DarkGray
-    Write-Host "  Usa -OutputFormat Json per output JSON." -ForegroundColor DarkGray
+    Write-Host "`n  Use -Detailed for health check (CPU, network, ports, I/O)." -ForegroundColor DarkGray
+    Write-Host "  Use -OutputFormat Json for JSON output." -ForegroundColor DarkGray
 }
 
 # ============================================================
-# AZIONE: AGENTINFO
+# ACTION: AGENTINFO
 # ============================================================
 
 function Action-AgentInfo {
     if (-not $AgentId) {
-        Write-StatusDot 'ERR' 'ERR' "Specifica -AgentId"; $reg = Get-CachedRegistry
-        if ($reg) { Write-Host "  Agenti disponibili:" -ForegroundColor Yellow; foreach ($a in $reg.agents) { Write-Host "    $($a.id) - $($a.name)" -ForegroundColor White } }
+        Write-StatusDot 'ERR' 'ERR' "Specify -AgentId"; $reg = Get-CachedRegistry
+        if ($reg) { Write-Host "  Available agents:" -ForegroundColor Yellow; foreach ($a in $reg.agents) { Write-Host "    $($a.id) - $($a.name)" -ForegroundColor White } }
         return
     }
-    $reg = Get-CachedRegistry; if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry non disponibile'; return }
+    $reg = Get-CachedRegistry; if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return }
     $agent = $reg.agents | Where-Object { $_.id -eq $AgentId } | Select-Object -First 1
-    if (-not $agent) { Write-StatusDot 'ERR' 'ERR' "Agente '$AgentId' non trovato"; return }
+    if (-not $agent) { Write-StatusDot 'ERR' 'ERR' "Agent '$AgentId' not found"; return }
 
     $det = Get-EnhancedDetection -Agent $agent -DeepScan:$true
     Write-Section "$($agent.name) ($($agent.id))" "Green"
-    Write-Host "`n  Info Registry:" -ForegroundColor Yellow
-    Write-Host "    Versione: $($agent.version)" -ForegroundColor White; Write-Host "    Licenza: $($agent.license)" -ForegroundColor White
-    Write-Host "    Descrizione: $($agent.description)" -ForegroundColor Gray
+    Write-Host "`n  Registry Info:" -ForegroundColor Yellow
+    Write-Host "    Version: $($agent.version)" -ForegroundColor White; Write-Host "    License: $($agent.license)" -ForegroundColor White
+    Write-Host "    Description: $($agent.description)" -ForegroundColor Gray
     if ($agent.website) { Write-Host "    Website: $($agent.website)" -ForegroundColor Blue }
     if ($agent.repository) { Write-Host "    Repository: $($agent.repository)" -ForegroundColor Blue }
-    Write-Host "`n  Distribuzione:" -ForegroundColor Yellow
+    Write-Host "`n  Distribution:" -ForegroundColor Yellow
     if ($agent.distribution.npx) { Write-Host "    npx: $($agent.distribution.npx.package)" -ForegroundColor White }
     if ($agent.distribution.uvx) { Write-Host "    uvx: $($agent.distribution.uvx.package)" -ForegroundColor White }
     if ($agent.distribution.binary) {
-        Write-Host "    Binary: supportato" -ForegroundColor White
+        Write-Host "    Binary: supported" -ForegroundColor White
         if ($agent.distribution.binary.'windows-x86_64') { Write-Host "      Windows x64: $($agent.distribution.binary.'windows-x86_64'.cmd)" -ForegroundColor Gray }
     }
-    Write-Host "`n  Rilevazione:" -ForegroundColor Yellow
+    Write-Host "`n  Detection:" -ForegroundColor Yellow
     if ($det.Installed) {
-        Write-StatusDot 'OK' 'OK' "Installato: $($det.InstallMethod) - $($det.InstallDetail)"
-        if ($det.InstalledVersion) { Write-StatusDot 'OK' 'OK' "Versione: $($det.InstalledVersion)" }
-    } else { Write-StatusDot 'STOP' 'STOP' 'Non installato' }
+        Write-StatusDot 'OK' 'OK' "Installed: $($det.InstallMethod) - $($det.InstallDetail)"
+        if ($det.InstalledVersion) { Write-StatusDot 'OK' 'OK' "Version: $($det.InstalledVersion)" }
+    } else { Write-StatusDot 'STOP' 'STOP' 'Not installed' }
     if ($det.Running) {
         Write-StatusDot $det.StatusIcon $det.StatusIcon "$($det.Status) (PID:$($det.ProcessId))"
         if ($det.RAM_MB) { Write-StatusDot 'OK' 'OK' "RAM: $($det.RAM_MB) MB" }
         if ($det.CPU_Pct) { Write-StatusDot $det.StatusIcon $det.StatusIcon "CPU: $($det.CPU_Pct)%" }
         if ($det.Uptime) { Write-StatusDot 'OK' 'OK' "Uptime: $($det.Uptime)" }
-        if ($det.PortListening) { Write-StatusDot 'RUN' 'RUN' 'In ascolto porta' }
-        if ($det.NetworkActive) { Write-StatusDot 'WORK' 'WORK' 'Rete attiva' }
-        if ($det.Working) { Write-StatusDot 'WORK' 'WORK' 'CPU attiva (lavorando)' }
+        if ($det.PortListening) { Write-StatusDot 'RUN' 'RUN' 'Listening on port' }
+        if ($det.NetworkActive) { Write-StatusDot 'WORK' 'WORK' 'Network active' }
+        if ($det.Working) { Write-StatusDot 'WORK' 'WORK' 'CPU active (working)' }
     }
     if ($det.Ports.Count -gt 0) {
-        Write-Host "`n  Porte:" -ForegroundColor Yellow; foreach ($p in $det.Ports) { Write-Host "    Porta $($p.Port) - $($p.State)" -ForegroundColor White }
+        Write-Host "`n  Ports:" -ForegroundColor Yellow; foreach ($p in $det.Ports) { Write-Host "    Port $($p.Port) - $($p.State)" -ForegroundColor White }
     }
     if ($det.ConfigFiles.Count -gt 0) {
         Write-Host "`n  Config files:" -ForegroundColor Yellow; foreach ($cf in $det.ConfigFiles) { Write-Host "    $cf" -ForegroundColor White }
     }
 }
 
+
 # ============================================================
-# AZIONE: REGISTRY
+# ACTION: REGISTRY
 # ============================================================
 
 function Action-Registry {
     Write-Section "ACP Registry"; $reg = Get-CachedRegistry
-    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry non disponibile'; return }
-    Write-Host "  Versione registry: $($reg.version)" -ForegroundColor Cyan
-    Write-Host "  Agenti: $($reg.agents.Count)" -ForegroundColor Cyan
+    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return }
+    Write-Host "  Registry version: $($reg.version)" -ForegroundColor Cyan
+    Write-Host "  Agents: $($reg.agents.Count)" -ForegroundColor Cyan
     Write-Host "  Cache: $Script:RegistryCacheFile" -ForegroundColor DarkGray
-    Write-Section "Lista Agenti" "Cyan"
+    Write-Section "Agent List" "Cyan"
     $rows = @()
     foreach ($a in $reg.agents) {
         $dt = @(); if ($a.distribution.npx) { $dt += 'npx' }; if ($a.distribution.uvx) { $dt += 'uvx' }; if ($a.distribution.binary) { $dt += 'binary' }
         $lic = if ($a.license) { $a.license.Substring(0, [Math]::Min(14, $a.license.Length)) } else { '-' }
         $rows += [PSCustomObject]@{ ID=$a.id; Name=$a.name; Version=$a.version; License=$lic; Distro=($dt -join ',') }
     }
-    Write-Table -Data $rows -Properties @('ID','Name','Version','License','Distro') -Headers @('ID','Nome','Versione','Licenza','Distribuzione')
+    Write-Table -Data $rows -Properties @('ID','Name','Version','License','Distro') -Headers @('ID','Name','Version','License','Distribution')
 }
 
 # ============================================================
@@ -732,74 +733,74 @@ function Action-Registry {
 
 function Action-Tunnel {
     Write-Section "DevTunnel + Bridge"
-    if ($Bridge -eq 'all') { Write-StatusDot 'WARN' 'WARN' "Tunnel non supporta -Bridge all. Uso: opencode"; $Bridge = 'opencode' }
+    if ($Bridge -eq 'all') { Write-StatusDot 'WARN' 'WARN' "Tunnel does not support -Bridge all. Using: opencode"; $Bridge = 'opencode' }
     $tunnelCfg = Get-Config
-    if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'WARN' 'WARN' 'DevTunnel non installato. Installazione...'; Install-DevTunnel; if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'Installazione fallita'; return } }
+    if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'WARN' 'WARN' 'DevTunnel not installed. Installing...'; Install-DevTunnel; if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'Installation failed'; return } }
     $loginCheck = devtunnel user show 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-StatusDot 'INFO' 'INFO' 'Login richiesto'; devtunnel user login
-        if ($LASTEXITCODE -ne 0) { Write-StatusDot 'ERR' 'ERR' 'Login fallito. Usa: devtunnel user login -g'; return }
+        Write-StatusDot 'INFO' 'INFO' 'Login required'; devtunnel user login
+        if ($LASTEXITCODE -ne 0) { Write-StatusDot 'ERR' 'ERR' 'Login failed. Use: devtunnel user login -g'; return }
     }
     $bp = Get-BridgePort -BridgeName $Bridge
-    if ($Bridge -ne 'cursor') { $p = Start-Bridge -Name $Bridge -DisplayName $Script:BridgeNames[$Bridge] -Port $bp; if (-not $p) { Write-StatusDot 'ERR' 'ERR' "Bridge $Bridge non avviato"; return } }
-    else { Write-StatusDot 'INFO' 'INFO' 'Cursor - avvia da UI, porta 3000'; $bp = 3000 }
+    if ($Bridge -ne 'cursor') { $p = Start-Bridge -Name $Bridge -DisplayName $Script:BridgeNames[$Bridge] -Port $bp; if (-not $p) { Write-StatusDot 'ERR' 'ERR' "Bridge $Bridge not started"; return } }
+    else { Write-StatusDot 'INFO' 'INFO' 'Cursor - start from UI, port 3000'; $bp = 3000 }
 
     $anonFromCfg = ($tunnelCfg -and $tunnelCfg.profiles.$Profile.anonymous_tunnel -eq $true)
     $anonFlag = if ($Anonymous -or $anonFromCfg) { ' --allow-anonymous' } else { '' }
     $tunnelArg = if ($TunnelId) { "host $TunnelId -p $bp --protocol http$anonFlag" } else { "host -p $bp --protocol http$anonFlag" }
-    $lf = Join-Path $env:TEMP 'devtunnel-out.log'; Write-Log "Avvio DevTunnel porta $bp..." -Level INFO
+    $lf = Join-Path $env:TEMP 'devtunnel-out.log'; Write-Log "Starting DevTunnel on port $bp..." -Level INFO
     try {
         $tp = Start-Process cmd.exe -ArgumentList "/c devtunnel $tunnelArg" -WindowStyle Hidden -PassThru -RedirectStandardOutput $lf -RedirectStandardError $lf
         Start-Sleep -Seconds 4
         if (Test-Path $lf) {
             $o = Get-Content $lf -Raw; $m = [regex]::Match($o,'https?://[a-zA-Z0-9._-]+\.devtunnels\.ms:\d+')
             if ($m.Success) {
-                Write-Host "`n"; Write-StatusDot 'OK' 'OK' 'Tunnel attivo!'
-                Write-Host "  URL REMOTO: $($m.Value)" -ForegroundColor Green
-                Write-Host "  Bridge: $Bridge su porta $bp" -ForegroundColor Cyan; Write-Host "  PID: $($tp.Id)" -ForegroundColor DarkGray
-                if ($Anonymous -or $anonFromCfg) { Write-Host "  Accesso: ANONIMO" -ForegroundColor Yellow } else { Write-Host "  Accesso: Autenticato" -ForegroundColor DarkGray }
-                Write-Log "Tunnel attivo: $($m.Value)" -Level OK
-            } else { Write-StatusDot 'INFO' 'INFO' "DevTunnel avviato (PID:$($tp.Id))"; Write-Host "  Log: $lf" -ForegroundColor DarkGray }
+                Write-Host "`n"; Write-StatusDot 'OK' 'OK' 'Tunnel active!'
+                Write-Host "  REMOTE URL: $($m.Value)" -ForegroundColor Green
+                Write-Host "  Bridge: $Bridge on port $bp" -ForegroundColor Cyan; Write-Host "  PID: $($tp.Id)" -ForegroundColor DarkGray
+                if ($Anonymous -or $anonFromCfg) { Write-Host "  Access: ANONYMOUS" -ForegroundColor Yellow } else { Write-Host "  Access: Authenticated" -ForegroundColor DarkGray }
+                Write-Log "Tunnel active: $($m.Value)" -Level OK
+            } else { Write-StatusDot 'INFO' 'INFO' "DevTunnel started (PID:$($tp.Id))"; Write-Host "  Log: $lf" -ForegroundColor DarkGray }
         }
-        Write-Host "  Premi Ctrl+C per fermare.`n" -ForegroundColor Yellow
-    } catch { Write-StatusDot 'ERR' 'ERR' "Avvio tunnel: $_" }
+        Write-Host "  Press Ctrl+C to stop.`n" -ForegroundColor Yellow
+    } catch { Write-StatusDot 'ERR' 'ERR' "Tunnel start failed: $_" }
 }
 
 function Action-TunnelCreate {
-    Write-Section "Crea Tunnel Persistente"
-    if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'DevTunnel non installato'; return }
+    Write-Section "Create Persistent Tunnel"
+    if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'DevTunnel not installed'; return }
     $anonFlag = if ($Anonymous) { ' --allow-anonymous' } else { '' }
     try {
         $r = devtunnel create $anonFlag 2>&1
         if ($LASTEXITCODE -eq 0) {
             $idMatch = [regex]::Match($r,'[a-zA-Z0-9_-]+')
             if ($idMatch.Success -and $idMatch.Value.Length -gt 3) {
-                Write-StatusDot 'OK' 'OK' "Tunnel creato: $($idMatch.Value)"
+                Write-StatusDot 'OK' 'OK' "Tunnel created: $($idMatch.Value)"
                 $cfg = Get-Config; if (-not $cfg) { $cfg = New-DefaultConfig }
                 $cfg.profiles.$Profile.tunnel_id = $idMatch.Value; Save-Config $cfg
-                Write-Host "  Salvato nel profilo '$Profile'" -ForegroundColor DarkGray
-                Write-Host "`n  Dettagli:" -ForegroundColor Cyan; devtunnel show $idMatch.Value 2>&1 | ForEach-Object { Write-Host "    $_" }
+                Write-Host "  Saved to profile '$Profile'" -ForegroundColor DarkGray
+                Write-Host "`n  Details:" -ForegroundColor Cyan; devtunnel show $idMatch.Value 2>&1 | ForEach-Object { Write-Host "    $_" }
             }
-        } else { Write-StatusDot 'ERR' 'ERR' "Creazione fallita: $r" }
-    } catch { Write-StatusDot 'ERR' 'ERR' "Errore: $_" }
+        } else { Write-StatusDot 'ERR' 'ERR' "Creation failed: $r" }
+    } catch { Write-StatusDot 'ERR' 'ERR' "Error: $_" }
 }
 
 function Action-TunnelList {
-    Write-Section "Tunnel Esistenti"; if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'DevTunnel non installato'; return }
-    try { $r = devtunnel list 2>&1; if ($LASTEXITCODE -eq 0 -and $r) { Write-Host $r -ForegroundColor White } else { Write-StatusDot 'INFO' 'INFO' 'Nessun tunnel' } } catch { Write-StatusDot 'ERR' 'ERR' "Errore: $_" }
+    Write-Section "Existing Tunnels"; if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'DevTunnel not installed'; return }
+    try { $r = devtunnel list 2>&1; if ($LASTEXITCODE -eq 0 -and $r) { Write-Host $r -ForegroundColor White } else { Write-StatusDot 'INFO' 'INFO' 'No tunnels' } } catch { Write-StatusDot 'ERR' 'ERR' "Error: $_" }
 }
 
 function Action-TunnelInfo {
-    Write-Section "Dettagli Tunnel"; if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'DevTunnel non installato'; return }
+    Write-Section "Tunnel Details"; if (-not (Test-Cmd 'devtunnel')) { Write-StatusDot 'ERR' 'ERR' 'DevTunnel not installed'; return }
     $tid = $TunnelId; if (-not $tid) { $cfg = Get-Config; if ($cfg) { $tid = $cfg.profiles.$Profile.tunnel_id } }
     if (-not $tid) { try { $list = devtunnel list 2>&1; $m = [regex]::Match($list,'([a-zA-Z0-9_-]{10,})'); if ($m.Success) { $tid = $m.Value } } catch {} }
-    if ($tid) { devtunnel show $tid 2>&1 | ForEach-Object { Write-Host "  $_" } } else { Write-StatusDot 'WARN' 'WARN' 'Nessun tunnel. Usa -TunnelId o TunnelCreate' }
+    if ($tid) { devtunnel show $tid 2>&1 | ForEach-Object { Write-Host "  $_" } } else { Write-StatusDot 'WARN' 'WARN' 'No tunnel found. Use -TunnelId or TunnelCreate' }
 }
 
 function Action-TunnelDelete {
-    Write-Section "Elimina Tunnel"; $tid = $TunnelId; if (-not $tid) { $cfg = Get-Config; if ($cfg) { $tid = $cfg.profiles.$Profile.tunnel_id } }
-    if (-not $tid) { Write-StatusDot 'ERR' 'ERR' 'Specifica -TunnelId'; return }
-    try { $r = devtunnel delete $tid 2>&1; if ($LASTEXITCODE -eq 0) { Write-StatusDot 'OK' 'OK' "Tunnel $tid eliminato"; $cfg = Get-Config; if ($cfg -and $cfg.profiles.$Profile.tunnel_id -eq $tid) { $cfg.profiles.$Profile.tunnel_id = ''; Save-Config $cfg } } else { Write-StatusDot 'ERR' 'ERR' "Eliminazione fallita: $r" } } catch { Write-StatusDot 'ERR' 'ERR' "Errore: $_" }
+    Write-Section "Delete Tunnel"; $tid = $TunnelId; if (-not $tid) { $cfg = Get-Config; if ($cfg) { $tid = $cfg.profiles.$Profile.tunnel_id } }
+    if (-not $tid) { Write-StatusDot 'ERR' 'ERR' 'Specify -TunnelId'; return }
+    try { $r = devtunnel delete $tid 2>&1; if ($LASTEXITCODE -eq 0) { Write-StatusDot 'OK' 'OK' "Tunnel $tid deleted"; $cfg = Get-Config; if ($cfg -and $cfg.profiles.$Profile.tunnel_id -eq $tid) { $cfg.profiles.$Profile.tunnel_id = ''; Save-Config $cfg } } else { Write-StatusDot 'ERR' 'ERR' "Delete failed: $r" } } catch { Write-StatusDot 'ERR' 'ERR' "Error: $_" }
 }
 
 # ============================================================
@@ -807,72 +808,73 @@ function Action-TunnelDelete {
 # ============================================================
 
 function Action-Logs {
-    Write-Section "Log ($LogLines righe)"; $logPath = $Script:LogFile
-    if (-not (Test-Path $logPath)) { Write-StatusDot 'INFO' 'INFO' "Nessun log in $logPath"; return }
+    Write-Section "Log ($LogLines lines)"; $logPath = $Script:LogFile
+    if (-not (Test-Path $logPath)) { Write-StatusDot 'INFO' 'INFO' "No log at $logPath"; return }
     $content = Get-Content $logPath -Tail $LogLines; $totalLines = (Get-Content $logPath).Count
-    Write-Host "  File: $logPath ($totalLines righe)" -ForegroundColor DarkGray; Write-Host "  Ultime $LogLines righe:`n" -ForegroundColor DarkGray
+    Write-Host "  File: $logPath ($totalLines lines)" -ForegroundColor DarkGray; Write-Host "  Last $LogLines lines:`n" -ForegroundColor DarkGray
     foreach ($line in $content) { $color = 'Gray'; if ($line -match '\[ERROR\]') { $color = 'Red' } elseif ($line -match '\[WARN\]') { $color = 'Yellow' } elseif ($line -match '\[OK\]') { $color = 'Green' }; Write-Host "  $line" -ForegroundColor $color }
 }
 
-function Action-LogClear { $logPath = $Script:LogFile; if (Test-Path $logPath) { Clear-Content $logPath; Write-StatusDot 'OK' 'OK' 'Log puliti' } else { Write-StatusDot 'INFO' 'INFO' 'Nessun log' } }
+function Action-LogClear { $logPath = $Script:LogFile; if (Test-Path $logPath) { Clear-Content $logPath; Write-StatusDot 'OK' 'OK' 'Logs cleared' } else { Write-StatusDot 'INFO' 'INFO' 'No logs' } }
 
 # ============================================================
 # CONFIG / DIAG / AUTOSTART / MOBILE
 # ============================================================
 
 function Action-Config {
-    Write-Section "Configurazione"; if (-not (Test-Path $Script:ConfigFile)) { Write-StatusDot 'INFO' 'INFO' "Nessuna config. Esegui Init."; return }
+    Write-Section "Configuration"; if (-not (Test-Path $Script:ConfigFile)) { Write-StatusDot 'INFO' 'INFO' "No config. Run Init first."; return }
     Write-Host "  File: $Script:ConfigFile" -ForegroundColor DarkGray; Write-Host "`n$(Get-Content $Script:ConfigFile -Raw)" -ForegroundColor Cyan
-    Write-Host "`n  Porte:" -ForegroundColor Yellow; foreach ($b in @('opencode','kilocode','cursor')) { Write-Host "    $($Script:BridgeNames[$b]) -> $(Get-BridgePort -BridgeName $b)" -ForegroundColor White }
+    Write-Host "`n  Ports:" -ForegroundColor Yellow; foreach ($b in @('opencode','kilocode','cursor')) { Write-Host "    $($Script:BridgeNames[$b]) -> $(Get-BridgePort -BridgeName $b)" -ForegroundColor White }
 }
 
 function Action-Diag {
-    Write-Section "Diagnostica"
+    Write-Section "Diagnostics"
     $os = Get-CimInstance Win32_OperatingSystem
     Write-Host "  OS: $($os.Caption) - Build $($os.BuildNumber)" -ForegroundColor White
     Write-Host "  PowerShell: $($PSVersionTable.PSVersion)" -ForegroundColor White
-    Write-Host "  RAM: $([Math]::Round($os.FreePhysicalMemory/1MB,1)) GB liberi / $([Math]::Round($os.TotalVisibleMemorySize/1MB,1)) GB" -ForegroundColor White
-    Write-Host "`n  Prerequisiti:" -ForegroundColor Yellow
+    Write-Host "  RAM: $([Math]::Round($os.FreePhysicalMemory/1MB,1)) GB free / $([Math]::Round($os.TotalVisibleMemorySize/1MB,1)) GB total" -ForegroundColor White
+    Write-Host "`n  Prerequisites:" -ForegroundColor Yellow
     foreach ($c in @(@{n='Node.js';c='node --version'},@{n='npm';c='npm --version'},@{n='Git';c='git --version'},@{n='Winget';c='winget --version'},@{n='DevTunnel';c='devtunnel --version'})) {
-        try { $v = Invoke-Expression "$($c.c) 2>&1" -ErrorAction SilentlyContinue; if ($v) { Write-StatusDot 'OK' 'OK' "$($c.n): $($v -join ' ')" } else { Write-StatusDot 'WARN' 'WARN' "$($c.n): non trovato" } } catch { Write-StatusDot 'WARN' 'WARN' "$($c.n): non trovato" }
+        try { $v = Invoke-Expression "$($c.c) 2>&1" -ErrorAction SilentlyContinue; if ($v) { Write-StatusDot 'OK' 'OK' "$($c.n): $($v -join ' ')" } else { Write-StatusDot 'WARN' 'WARN' "$($c.n): not found" } } catch { Write-StatusDot 'WARN' 'WARN' "$($c.n): not found" }
     }
-    Write-Host "`n  Rete:" -ForegroundColor Yellow
-    try { $null = [System.Net.Dns]::GetHostEntry('devtunnels.ms'); Write-StatusDot 'OK' 'OK' 'DNS devtunnels.ms OK' } catch { Write-StatusDot 'ERR' 'ERR' 'DNS devtunnels.ms NON risolvibile' }
-    try { $h = Invoke-WebRequest -Uri 'https://devtunnels.ms' -TimeoutSec 5 -UseBasicParsing -ErrorAction SilentlyContinue; if ($h.StatusCode -eq 200) { Write-StatusDot 'OK' 'OK' 'Connessione devtunnels.ms OK' } } catch { Write-StatusDot 'ERR' 'ERR' 'Connessione devtunnels.ms FALLITA' }
-    Write-Host "`n  Registry ACP: $(if (Test-Path $Script:RegistryCacheFile) { 'In cache' } else { 'Non scaricato' })" -ForegroundColor White
-    Write-Host "`n  Usa: .\acp-manager.ps1 -Action Scan per scansione completa." -ForegroundColor Cyan
+    Write-Host "`n  Network:" -ForegroundColor Yellow
+    try { $null = [System.Net.Dns]::GetHostEntry('devtunnels.ms'); Write-StatusDot 'OK' 'OK' 'DNS devtunnels.ms OK' } catch { Write-StatusDot 'ERR' 'ERR' 'DNS devtunnels.ms NOT RESOLVABLE' }
+    try { $h = Invoke-WebRequest -Uri 'https://devtunnels.ms' -TimeoutSec 5 -UseBasicParsing -ErrorAction SilentlyContinue; if ($h.StatusCode -eq 200) { Write-StatusDot 'OK' 'OK' 'Connection devtunnels.ms OK' } } catch { Write-StatusDot 'ERR' 'ERR' 'Connection devtunnels.ms FAILED' }
+    Write-Host "`n  ACP Registry: $(if (Test-Path $Script:RegistryCacheFile) { 'Cached' } else { 'Not downloaded' })" -ForegroundColor White
+    Write-Host "`n  Run: .\acp-manager.ps1 -Action Scan for full scan." -ForegroundColor Cyan
 }
 
 function Action-Autostart {
     $taskName = 'ACP-Manager'; $scriptPath = (Get-Item $PSCommandPath).FullName
-    Write-Section "Auto-Avvio Windows"; Write-Host "  Task: $taskName" -ForegroundColor DarkGray; Write-Host "  Script: $scriptPath`n" -ForegroundColor DarkGray
+    Write-Section "Windows Auto-Start"; Write-Host "  Task: $taskName" -ForegroundColor DarkGray; Write-Host "  Script: $scriptPath`n" -ForegroundColor DarkGray
     $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($Disable) { if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Auto-avvio rimosso' } else { Write-StatusDot 'INFO' 'INFO' 'Nessun auto-avvio' }; return }
-    if ($existing) { Write-StatusDot 'INFO' 'INFO' 'Auto-avvio gia configurato'; $r = Read-Host "Rimuoverlo? (s/N)"; if ($r -eq 's') { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Rimosso' } else { Write-StatusDot 'INFO' 'INFO' 'Mantenuto' }; return }
+    if ($Disable) { if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Auto-start removed' } else { Write-StatusDot 'INFO' 'INFO' 'No auto-start configured' }; return }
+    if ($existing) { Write-StatusDot 'INFO' 'INFO' 'Auto-start already configured'; $r = Read-Host "Remove it? (y/N)"; if ($r -eq 'y' -or $r -eq 's') { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Removed' } else { Write-StatusDot 'INFO' 'INFO' 'Kept' }; return }
     $autostartBridge = if ($Bridge -eq 'all') { 'opencode' } else { $Bridge }
     try {
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Action Start -Bridge $autostartBridge"
         $trigger = New-ScheduledTaskTrigger -AtLogOn; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "ACP Manager - $autostartBridge" -Force
-        Write-StatusDot 'OK' 'OK' "Auto-avvio configurato per $autostartBridge"
-    } catch { Write-StatusDot 'ERR' 'ERR' "Registrazione fallita: $_"; Write-Host "  Esegui PowerShell come Amministratore." -ForegroundColor Yellow }
+        Write-StatusDot 'OK' 'OK' "Auto-start configured for $autostartBridge"
+    } catch { Write-StatusDot 'ERR' 'ERR' "Registration failed: $_"; Write-Host "  Run PowerShell as Administrator." -ForegroundColor Yellow }
 }
 
 function Action-Mobile {
-    Write-Section "Integrazione Mobile"
+    Write-Section "Mobile Integration"
     $mobileCfg = Get-Config; $anonMode = $Anonymous -or ($mobileCfg -and $mobileCfg.profiles.$Profile.anonymous_tunnel -eq $true)
     Write-Host @"
-  Per connetterti da mobile al bridge ACP:
+  To connect from mobile to ACP bridge:
 
-  1. Installa un'app ACP (es. Agmente su iOS)
-  2. Avvia bridge + tunnel: .\ACP-Bridges.ps1 -Action Tunnel -Bridge $Bridge
-  3. Usa l'URL remoto mostrato nell'app
+  1. Install an ACP app (e.g. Agmente on iOS)
+  2. Start bridge + tunnel:
+     .\acp-manager.ps1 -Action Tunnel -Bridge $Bridge
+  3. Use the remote URL shown in the app
 
-  Accesso: $(if ($anonMode) { 'ANONIMO' } else { 'AUTENTICATO (Microsoft/GitHub)' })
+  Access: $(if ($anonMode) { 'ANONYMOUS' } else { 'AUTHENTICATED (Microsoft/GitHub)' })
 "@
     $tid = $TunnelId; if (-not $tid -and $mobileCfg) { $tid = $mobileCfg.profiles.$Profile.tunnel_id }
-    if ($tid) { Write-Host "`n  Tunnel persistente: $tid" -ForegroundColor Cyan }
-    Write-Host "`n  Esempi:" -ForegroundColor White
+    if ($tid) { Write-Host "`n  Persistent tunnel: $tid" -ForegroundColor Cyan }
+    Write-Host "`n  Examples:" -ForegroundColor White
     Write-Host "    .\acp-manager.ps1 -Action Tunnel -Bridge opencode" -ForegroundColor White
     Write-Host "    .\acp-manager.ps1 -Action Tunnel -Bridge kilocode`n" -ForegroundColor White
 }
@@ -891,51 +893,59 @@ function Show-Help {
     Bridge Management + Agent Detection Engine
   ============================================================
 
-  RILEVAZIONE:
-$(Format-HelpAction 'Scan'          'Scansione 37+ agent ACP (installati, running, working)')
-$(Format-HelpAction 'AgentInfo'     'Info dettagliate su un agente (-AgentId)')
-$(Format-HelpAction 'Registry'      'Mostra/aggiorna registry ACP ufficiale')
-$(Format-HelpAction 'InstallAgent'  'Installa un agente ACP dal registry (-AgentId)')
-$(Format-HelpAction 'Update'        'Aggiorna agenti ACP (-AgentId nome | all)')
+  INTERACTIVE MODE:
+$(Format-HelpAction 'Interactive'  'Launch interactive menu (default when no args)')
 
-  GESTIONE BRIDGE:
-$(Format-HelpAction 'Status'      'Stato bridge + agenti rilevati')
-$(Format-HelpAction 'Install'     'Installa bridge ACP (opencode, kilocode, cursor)')
-$(Format-HelpAction 'Start'       'Avvia bridge in background')
-$(Format-HelpAction 'Stop'        'Ferma bridge')
-$(Format-HelpAction 'Restart'     'Riavvia bridge')
-$(Format-HelpAction 'Init'        'Configurazione guidata iniziale')
+  DETECTION:
+$(Format-HelpAction 'Scan'          'Scan 37+ ACP agents (installed, running, working)')
+$(Format-HelpAction 'AgentInfo'     'Detailed info on an agent (-AgentId)')
+$(Format-HelpAction 'Registry'      'Show/update official ACP registry')
+$(Format-HelpAction 'InstallAgent'  'Install an ACP agent from registry (-AgentId)')
+$(Format-HelpAction 'Update'        'Update ACP agents (-AgentId name | all)')
+
+  BRIDGE MANAGEMENT:
+$(Format-HelpAction 'Status'      'Bridge status + detected agents')
+$(Format-HelpAction 'Install'     'Install ACP bridges (opencode, kilocode, cursor)')
+$(Format-HelpAction 'Start'       'Start bridge in background')
+$(Format-HelpAction 'Stop'        'Stop bridge')
+$(Format-HelpAction 'Restart'     'Restart bridge')
+$(Format-HelpAction 'Init'        'Guided initial setup')
 
   DEV TUNNEL:
-$(Format-HelpAction 'Tunnel'      'Bridge + tunnel remoto')
-$(Format-HelpAction 'TunnelCreate' 'Crea tunnel persistente')
-$(Format-HelpAction 'TunnelList'  'Lista tunnel')
-$(Format-HelpAction 'TunnelInfo'  'Dettagli tunnel')
-$(Format-HelpAction 'TunnelDelete''Elimina tunnel')
+$(Format-HelpAction 'Tunnel'      'Bridge + remote tunnel')
+$(Format-HelpAction 'TunnelCreate' 'Create persistent tunnel')
+$(Format-HelpAction 'TunnelList'  'List tunnels')
+$(Format-HelpAction 'TunnelInfo'  'Tunnel details')
+$(Format-HelpAction 'TunnelDelete''Delete tunnel')
 
-  SISTEMA:
-$(Format-HelpAction 'Config'      'Mostra configurazione')
-$(Format-HelpAction 'Diag'        'Diagnostica sistema')
-$(Format-HelpAction 'Logs'        'Mostra log (-LogLines N)')
-$(Format-HelpAction 'LogClear'    'Pulisci log')
-$(Format-HelpAction 'Autostart'   'Auto-avvio Windows (-Disable per rimuovere)')
-$(Format-HelpAction 'Mobile'      'Guida integrazione mobile')
-$(Format-HelpAction 'Help'        'Questa guida')
+  SYSTEM:
+$(Format-HelpAction 'Config'      'Show configuration')
+$(Format-HelpAction 'Diag'        'System diagnostics')
+$(Format-HelpAction 'Logs'        'Show logs (-LogLines N)')
+$(Format-HelpAction 'LogClear'    'Clear logs')
+$(Format-HelpAction 'Autostart'   'Windows auto-start (-Disable to remove)')
+$(Format-HelpAction 'Mobile'      'Mobile integration guide')
+$(Format-HelpAction 'Help'        'This help screen')
 
-  PARAMETRI:
-    -AgentId       ID agente registry (es. gemini, claude-acp, devin)
+  PARAMETERS:
+    -Action        Init | Install | InstallAgent | Start | Stop | Restart | Update |
+                   Status | Scan | AgentInfo | Registry | Interactive | Help |
+                   Tunnel | TunnelCreate | TunnelList | TunnelInfo | TunnelDelete |
+                   Logs | LogClear | Config | Diag | Autostart | Mobile | Watch
+    -AgentId       Registry agent ID (e.g. gemini, claude-acp, devin)
     -Bridge        opencode | kilocode | cursor | all
-    -Port          Porta personalizzata
-    -TunnelId      ID DevTunnel
+    -Port          Custom port
+    -TunnelId      DevTunnel ID
     -OutputFormat  Text | Json
-    -Profile       Profilo config
-    -LogLines      Righe log (default: 50)
-    -Anonymous     Tunnel anonimo (switch)
-    -Detailed      Output dettagliato (switch)
-    -UpdateRegistry Forza aggiornamento registry (switch)
-    -Disable       Disabilita auto-avvio (switch)
+    -Profile       Config profile
+    -LogLines      Log lines (default: 50)
+    -Anonymous     Anonymous tunnel (switch)
+    -Detailed      Detailed output (switch)
+    -UpdateRegistry Force registry update (switch)
+    -Disable       Disable auto-start (switch)
 
-  ESEMPI:
+  EXAMPLES:
+    .\acp-manager.ps1                        # Interactive mode
     .\acp-manager.ps1 -Action Scan
     .\acp-manager.ps1 -Action Scan -Detailed
     .\acp-manager.ps1 -Action Scan -OutputFormat Json
@@ -961,9 +971,9 @@ $(Format-HelpAction 'Help'        'Questa guida')
 function Write-ScanProgress {
     param([int]$Current, [int]$Total, [string]$AgentName)
     $pct = [int]($Current / $Total * 100)
-    Write-Progress -Activity "Scansione agent ACP" -Status "$AgentName ($Current/$Total)" -PercentComplete $pct
+    Write-Progress -Activity "Scanning ACP agents" -Status "$AgentName ($Current/$Total)" -PercentComplete $pct
 }
-function Clear-ScanProgress { Write-Progress -Activity "Scansione agent ACP" -Completed }
+function Clear-ScanProgress { Write-Progress -Activity "Scanning ACP agents" -Completed }
 
 # ---- Caching System ----
 $Script:NpmCache = $null; $Script:CargoCache = $null; $Script:WingetCache = $null; $Script:CacheTime = @{}
@@ -1119,7 +1129,7 @@ Move-Item `$tmp '$destDir\$destName' -Force
             elseif ($Agent.distribution.uvx) {
                 return @{ Cmd = "uv tool install --upgrade $pkg 2>&1"; Label = "uvx: $pkg" }
             }
-            return @{ Cmd = $null; Label = "$InstallMethod (manuale)" }
+            return @{ Cmd = $null; Label = "$InstallMethod (manual)" }
         }
         default {
             # Registry install method or unknown
@@ -1128,7 +1138,7 @@ Move-Item `$tmp '$destDir\$destName' -Force
                 $npmPkg = $nameParts[0]
                 return @{ Cmd = "npm install -g $npmPkg@latest 2>&1"; Label = "npm: $npmPkg" }
             }
-            return @{ Cmd = $null; Label = "$InstallMethod (manuale)" }
+            return @{ Cmd = $null; Label = "$InstallMethod (manual)" }
         }
     }
 }
@@ -1140,7 +1150,7 @@ function Update-Agent {
     $det = Get-EnhancedDetection -Agent $Agent
 
     if (-not $det.Installed) {
-        if (-not $Quiet) { Write-StatusDot 'STOP' 'STOP' "$name non installato" }
+        if (-not $Quiet) { Write-StatusDot 'STOP' 'STOP' "$name not installed" }
         return $false
     }
 
@@ -1148,15 +1158,15 @@ function Update-Agent {
 
     if (-not $updCmd.Cmd) {
         if (-not $Quiet) {
-            Write-StatusDot 'WARN' 'WARN' "${name}: aggiornamento automatico non supportato per $($det.InstallMethod)"
-            Write-Host "    Visita: $($Agent.website)" -ForegroundColor Blue
+            Write-StatusDot 'WARN' 'WARN' "${name}: auto-update not supported for $($det.InstallMethod)"
+            Write-Host "    Visit: $($Agent.website)" -ForegroundColor Blue
         }
         # Try fallback: winget or npm
         return $false
     }
 
     $oldVer = $det.InstalledVersion
-    Write-Log "Aggiornamento $name ($($updCmd.Label))..." -Level INFO
+    Write-Log "Updating $name ($($updCmd.Label))..." -Level INFO
     if (-not $Quiet) { Write-Host "  >> $($updCmd.Label)" -ForegroundColor DarkGray }
 
     try {
@@ -1175,25 +1185,25 @@ function Update-Agent {
             $newVer = $det2.InstalledVersion
             if ($newVer -and $newVer -ne $oldVer) {
                 Write-StatusDot 'OK' 'OK' "${name}: $oldVer -> $newVer ($($updCmd.Label))"
-                Write-Log "$name aggiornato: $oldVer -> $newVer" -Level OK
+                Write-Log "$name updated: $oldVer -> $newVer" -Level OK
             } else {
                 Write-StatusDot 'OK' 'OK' "${name}: $newVer ($($updCmd.Label))"
-                Write-Log "$name aggiornato" -Level OK
+                Write-Log "$name updated" -Level OK
             }
             return $true
         } else {
             $errMsg = if ($r) { "$r".Trim().Split("`n")[0] } else { "exit code $LASTEXITCODE" }
             if (-not $Quiet) { Write-StatusDot 'ERR' 'ERR' "${name}: $errMsg" }
-        Write-Log "Errore aggiornamento ${name}: $errMsg" -Level ERROR
+        Write-Log "Update error ${name}: $errMsg" -Level ERROR
 
         # Try fallback: npm install if original method was PATH/KnownPath
             if ($updCmd.Fallback -and $Agent.distribution.npx) {
                 $nameParts = $Agent.distribution.npx.package -split '@'
                 $npmPkg = $nameParts[0]
-                if (-not $Quiet) { Write-Host "    Ripiego con: npm install -g $npmPkg@latest" -ForegroundColor Yellow }
+                if (-not $Quiet) { Write-Host "    Falling back to: npm install -g $npmPkg@latest" -ForegroundColor Yellow }
                 try {
                     $r2 = npm install -g $npmPkg@latest 2>&1
-                    if ($LASTEXITCODE -eq 0) { Write-StatusDot 'OK' 'OK' "${name}: aggiornato via npm"; return $true }
+                    if ($LASTEXITCODE -eq 0) { Write-StatusDot 'OK' 'OK' "${name}: updated via npm"; return $true }
                 } catch {}
             }
             return $false
@@ -1201,16 +1211,16 @@ function Update-Agent {
     } catch {
         $errMsg = "$_".Trim().Split("`n")[0]
         if (-not $Quiet) { Write-StatusDot 'ERR' 'ERR' "${name}: $errMsg" }
-        Write-Log "Errore aggiornamento ${name}: $errMsg" -Level ERROR
+        Write-Log "Update error ${name}: $errMsg" -Level ERROR
         return $false
     }
 }
 
 function Action-Update {
-    Write-Section "Aggiornamento Agenti ACP"
+    Write-Section "Updating ACP Agents"
 
     $reg = Get-CachedRegistry
-    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry non disponibile'; return }
+    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return }
 
     # Determine which agents to update
     $targets = @()
@@ -1221,20 +1231,20 @@ function Action-Update {
             $targets = $reg.agents
         } else {
             $agent = $reg.agents | Where-Object { $_.id -eq $AgentId } | Select-Object -First 1
-            if (-not $agent) { Write-StatusDot 'ERR' 'ERR' "Agente '$AgentId' non trovato"; return }
+            if (-not $agent) { Write-StatusDot 'ERR' 'ERR' "Agent '$AgentId' not found"; return }
             $targets = @($agent)
         }
     } elseif ($Bridge -ne 'all') {
         # Update a specific bridge
         $agent = $reg.agents | Where-Object { $_.id -eq $Bridge } | Select-Object -First 1
-        if ($agent) { $targets = @($agent) } else { Write-StatusDot 'ERR' 'ERR' "Bridge '$Bridge' non trovato nel registry"; return }
+        if ($agent) { $targets = @($agent) } else { Write-StatusDot 'ERR' 'ERR' "Bridge '$Bridge' not found in registry"; return }
     } else {
         # Default: update all installed
         $targets = $reg.agents
     }
 
     # First pass: detect which are installed
-    Write-Host "  Rilevamento agenti installati..." -ForegroundColor DarkGray
+    Write-Host "  Detecting installed agents..." -ForegroundColor DarkGray
     $installed = @()
     $count = 0
     foreach ($a in $targets) {
@@ -1248,27 +1258,27 @@ function Action-Update {
     Clear-ScanProgress
 
     if ($installed.Count -eq 0) {
-        Write-StatusDot 'INFO' 'INFO' 'Nessun agente installato da aggiornare'
+        Write-StatusDot 'INFO' 'INFO' 'No installed agents to update'
         return
     }
 
-    Write-Host "  Trovati $($installed.Count) agenti da aggiornare`n" -ForegroundColor Cyan
+    Write-Host "  Found $($installed.Count) agents to update`n" -ForegroundColor Cyan
 
     # Show summary table
     $summary = $installed | ForEach-Object {
         $a = $_.Agent; $d = $_.Detection
         [PSCustomObject]@{
-            Agente = $a.name; Versione = if ($d.InstalledVersion) { $d.InstalledVersion.Substring(0, [Math]::Min(16, $d.InstalledVersion.Length)) } else { '-' }
+            Agent = $a.name; Version = if ($d.InstalledVersion) { $d.InstalledVersion.Substring(0, [Math]::Min(16, $d.InstalledVersion.Length)) } else { '-' }
             Registry = $a.version; Method = $d.InstallMethod
         }
     }
-    Write-Table -Data $summary -Properties @('Agente','Versione','Registry','Method') -Headers @('Agente','Versione Locale','Versione Registry','Metodo')
+    Write-Table -Data $summary -Properties @('Agent','Version','Registry','Method') -Headers @('Agent','Local Version','Registry Version','Method')
 
     # Confirm unless -AgentId specified a single agent
     if ($installed.Count -gt 1) {
         Write-Host "`n"
-        $confirm = Read-Host "Aggiornare tutti i $($installed.Count) agenti? (S/N)"
-        if ($confirm -ne 'S' -and $confirm -ne 's') { Write-Log "Aggiornamento annullato." -Level INFO; return }
+        $confirm = Read-Host "Update all $($installed.Count) agents? (y/N)"
+        if ($confirm -ne 'y' -and $confirm -ne 'Y' -and $confirm -ne 's' -and $confirm -ne 'S') { Write-Log "Update cancelled." -Level INFO; return }
     }
 
     Write-Host "`n"
@@ -1280,51 +1290,51 @@ function Action-Update {
         foreach ($item in $installed) {
             $count++
             $a = $item.Agent; $d = $item.Detection
-            Write-Progress -Activity "Aggiornamento agenti ACP" -Status "$($a.name) ($count/$($installed.Count))" -PercentComplete ([int]($count / $installed.Count * 100))
+            Write-Progress -Activity "Updating ACP agents" -Status "$($a.name) ($count/$($installed.Count))" -PercentComplete ([int]($count / $installed.Count * 100))
             Write-Host "  [$count/$($installed.Count)] " -NoNewline -ForegroundColor DarkGray
             if (Update-Agent -Agent $a) { $success++ } else { $failed++ }
         }
     }
-    Write-Progress -Activity "Aggiornamento agenti ACP" -Completed
+    Write-Progress -Activity "Updating ACP agents" -Completed
 
     Write-Host "`n"
-    Write-Section "Riepilogo Aggiornamento" "Green"
-    Write-Host "  Riusciti: $success" -ForegroundColor Green
-    Write-Host "  Falliti:  $failed" -ForegroundColor $(if ($failed -gt 0) { 'Red' } else { 'DarkGray' })
-    Write-Host "  Tempo:    $([Math]::Round($totalTime.TotalSeconds,1))s" -ForegroundColor DarkGray
+    Write-Section "Update Summary" "Green"
+    Write-Host "  Succeeded: $success" -ForegroundColor Green
+    Write-Host "  Failed:    $failed" -ForegroundColor $(if ($failed -gt 0) { 'Red' } else { 'DarkGray' })
+    Write-Host "  Time:      $([Math]::Round($totalTime.TotalSeconds,1))s" -ForegroundColor DarkGray
     if ($failed -gt 0) {
-        Write-Host "`n  Per aggiornamenti manuali, visita il sito dell'agente." -ForegroundColor Yellow
+        Write-Host "`n  For manual updates, visit the agent's website." -ForegroundColor Yellow
     }
 }
 
 # ============================================================
-# AZIONE: INSTALLAGENT (dal Registry ACP)
+# ACTION: INSTALLAGENT (from ACP Registry)
 # ============================================================
 
 function Action-InstallAgent {
-    Write-Section "Installazione Agente ACP dal Registry"
+    Write-Section "Installing ACP Agent from Registry"
     $reg = Get-CachedRegistry
-    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry non disponibile. Usa -UpdateRegistry per scaricarlo'; return }
+    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available. Use -UpdateRegistry to download'; return }
 
     # List available agents if no -AgentId specified
     if (-not $AgentId) {
-        Write-Host "  Usa -AgentId per specificare un agente. Disponibili:`n" -ForegroundColor Yellow
+        Write-Host "  Use -AgentId to specify an agent. Available:`n" -ForegroundColor Yellow
         $rows = @()
         foreach ($a in $reg.agents) {
             $dt = @(); if ($a.distribution.npx) { $dt += 'npx' }; if ($a.distribution.uvx) { $dt += 'uvx' }
             if ($a.distribution.binary) { $dt += 'binary' }; if ($a.distribution.cargo) { $dt += 'cargo' }
-            $rows += [PSCustomObject]@{ ID=$a.id; Name=$a.name; Versione=$a.version; Installa=($dt -join ', ') }
+            $rows += [PSCustomObject]@{ ID=$a.id; Name=$a.name; Version=$a.version; Install=($dt -join ', ') }
         }
-        Write-Table -Data $rows -Properties @('ID','Name','Versione','Installa') -Headers @('ID','Nome','Versione','Metodi Installazione')
-        Write-Host "`n  Esempio: .\acp-manager.ps1 -Action InstallAgent -AgentId gemini`n" -ForegroundColor Cyan
+        Write-Table -Data $rows -Properties @('ID','Name','Version','Install') -Headers @('ID','Name','Version','Install Methods')
+        Write-Host "`n  Example: .\acp-manager.ps1 -Action InstallAgent -AgentId gemini`n" -ForegroundColor Cyan
         return
     }
 
     # Look up agent in registry
     $agent = $reg.agents | Where-Object { $_.id -eq $AgentId } | Select-Object -First 1
     if (-not $agent) {
-        Write-StatusDot 'ERR' 'ERR' "Agente '$AgentId' non trovato nel registry"
-        Write-Host "  Usa .\acp-manager.ps1 -Action Registry per vedere tutti gli agenti." -ForegroundColor Yellow
+        Write-StatusDot 'ERR' 'ERR' "Agent '$AgentId' not found in registry"
+        Write-Host "  Use .\acp-manager.ps1 -Action Registry to see all agents." -ForegroundColor Yellow
         return
     }
 
@@ -1334,12 +1344,12 @@ function Action-InstallAgent {
     $det = Get-EnhancedDetection -Agent $agent
     if ($det.Installed) {
         $v = if ($det.InstalledVersion) { $det.InstalledVersion } else { '?' }
-        Write-StatusDot 'OK' 'OK' "$name gia installato ($v) via $($det.InstallMethod)"
-        $r = Read-Host "  Reinstallare/aggiornare lo stesso? (S/N)"
-        if ($r -ne 'S' -and $r -ne 's') { Write-Log "Installazione annullata." -Level INFO; return }
+        Write-StatusDot 'OK' 'OK' "$name already installed ($v) via $($det.InstallMethod)"
+        $r = Read-Host "  Reinstall/update it? (y/N)"
+        if ($r -ne 'y' -and $r -ne 'Y' -and $r -ne 's' -and $r -ne 'S') { Write-Log "Install cancelled." -Level INFO; return }
         Write-Host ""
     } else {
-        Write-StatusDot 'INFO' 'INFO' "$name ($id) v$ver - non installato"
+        Write-StatusDot 'INFO' 'INFO' "$name ($id) v$ver - not installed"
     }
 
     # Determine available install methods
@@ -1369,18 +1379,18 @@ function Action-InstallAgent {
     }
 
     if ($methods.Count -eq 0) {
-        Write-StatusDot 'ERR' 'ERR' "Nessun metodo di installazione disponibile per $name nel registry"
-        if ($agent.website) { Write-Host "    Visita: $($agent.website)" -ForegroundColor Blue }
+        Write-StatusDot 'ERR' 'ERR' "No install methods available for $name in registry"
+        if ($agent.website) { Write-Host "    Visit: $($agent.website)" -ForegroundColor Blue }
         return
     }
 
     # Show available methods
-    Write-Host "  Metodi di installazione disponibili:`n" -ForegroundColor Yellow
+    Write-Host "  Available install methods:`n" -ForegroundColor Yellow
     $methodTable = $methods | Sort-Object Priority | ForEach-Object {
         $ok = if (-not $_.Req -or (Test-Cmd $_.Req)) { 'OK' } else { 'NO' }
-        [PSCustomObject]@{ Priority=$_.Priority; Metodo=$_.Method; Comando=$_.Label; Prereq="$($_.Req) [$ok]" }
+        [PSCustomObject]@{ Priority=$_.Priority; Method=$_.Method; Command=$_.Label; Prereq="$($_.Req) [$ok]" }
     }
-    Write-Table -Data $methodTable -Properties @('Priority','Metodo','Comando','Prereq') -Headers @('#','Metodo','Comando','Prerequisito')
+    Write-Table -Data $methodTable -Properties @('Priority','Method','Command','Prereq') -Headers @('#','Method','Command','Prerequisite')
 
     # Pick best method: try best available that has prereqs
     $chosen = $null
@@ -1388,22 +1398,22 @@ function Action-InstallAgent {
         if (-not $m.Req -or (Test-Cmd $m.Req)) { $chosen = $m; break }
     }
     if (-not $chosen) {
-        Write-StatusDot 'ERR' 'ERR' "Nessun prerequisito disponibile per installare $name"
-        Write-Host "    Servono: $($methods.Req -join ', ')" -ForegroundColor Yellow
+        Write-StatusDot 'ERR' 'ERR' "No prerequisites available to install $name"
+        Write-Host "    Need: $($methods.Req -join ', ')" -ForegroundColor Yellow
         return
     }
 
     # Confirm
     Write-Host "`n"
-    Write-Host "  Metodo scelto: $($chosen.Label)" -ForegroundColor Cyan
-    $r = Read-Host "  Installare $name? (S/N)"
-    if ($r -ne 'S' -and $r -ne 's') { Write-Log "Installazione annullata." -Level INFO; return }
+    Write-Host "  Chosen method: $($chosen.Label)" -ForegroundColor Cyan
+    $r = Read-Host "  Install $name? (y/N)"
+    if ($r -ne 'y' -and $r -ne 'Y' -and $r -ne 's' -and $r -ne 'S') { Write-Log "Install cancelled." -Level INFO; return }
     Write-Host ""
 
     # Execute installation
     $success = $false
     try {
-        Write-Log "Installazione $name via $($chosen.Method)..." -Level INFO
+        Write-Log "Installing $name via $($chosen.Method)..." -Level INFO
         Write-Host "  >> $($chosen.Label)" -ForegroundColor DarkGray
 
         if ($chosen.Method -eq 'binary') {
@@ -1420,38 +1430,38 @@ function Action-InstallAgent {
                 [Environment]::SetEnvironmentVariable('PATH', "$p;$destDir", 'User')
                 $env:PATH += ";$destDir"
             }
-            Write-StatusDot 'OK' 'OK' "$name installato in $destDir"
+            Write-StatusDot 'OK' 'OK' "$name installed to $destDir"
             $success = $true
         } else {
             $r = Invoke-Expression $chosen.Cmd 2>&1
             if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
-                Write-StatusDot 'OK' 'OK' "$name installato ($($chosen.Label))"
-                Write-Log "$name installato con successo" -Level OK
+                Write-StatusDot 'OK' 'OK' "$name installed ($($chosen.Label))"
+                Write-Log "$name installed successfully" -Level OK
                 $success = $true
             } else {
                 $errMsg = if ($r) { "$r".Trim().Split("`n")[0] } else { "exit code $LASTEXITCODE" }
-                Write-StatusDot 'ERR' 'ERR' "Installazione fallita: $errMsg"
-                Write-Log "Installazione $name fallita: $errMsg" -Level ERROR
+                Write-StatusDot 'ERR' 'ERR' "Install failed: $errMsg"
+                Write-Log "Install $name failed: $errMsg" -Level ERROR
             }
         }
     } catch {
-        Write-StatusDot 'ERR' 'ERR' "Errore installazione: $_"
-        Write-Log "Errore installazione ${name}: $_" -Level ERROR
+        Write-StatusDot 'ERR' 'ERR' "Install error: $_"
+        Write-Log "Install error ${name}: $_" -Level ERROR
     }
 
     # Verify installation
     if ($success) {
         Start-Sleep -Seconds 2
-        Write-Host "`n  Verifica installazione..." -ForegroundColor DarkGray
+        Write-Host "`n  Verifying installation..." -ForegroundColor DarkGray
         $det2 = Get-EnhancedDetection -Agent $agent
         if ($det2.Installed) {
             $v = if ($det2.InstalledVersion) { $det2.InstalledVersion } else { 'OK' }
-            Write-StatusDot 'OK' 'OK' "$name verificato ($v) via $($det2.InstallMethod)"
+            Write-StatusDot 'OK' 'OK' "$name verified ($v) via $($det2.InstallMethod)"
             if ($det2.VersionStatus -eq 'outdated') {
-                Write-StatusDot 'WARN' 'WARN' "Versione installata ($v) < registry ($ver). Prova: .\acp-manager.ps1 -Action Update -AgentId $id"
+                Write-StatusDot 'WARN' 'WARN' "Installed version ($v) < registry ($ver). Try: .\acp-manager.ps1 -Action Update -AgentId $id"
             }
         } else {
-            Write-StatusDot 'WARN' 'WARN' "$name installato ma non rilevato. Forse serve riavviare il terminale."
+            Write-StatusDot 'WARN' 'WARN' "$name installed but not detected. Try restarting your terminal."
         }
     }
 }
@@ -1459,38 +1469,18 @@ function Action-InstallAgent {
 # ---- WATCH MODE ----
 function Action-Watch {
     param([int]$Interval = 10)
-    Write-Section "Watch Mode - Ctrl+C per uscire"
-    Write-Host "  Aggiornamento ogni ${Interval}s" -ForegroundColor DarkGray
+    Write-Section "Watch Mode - Ctrl+C to exit"
+    Write-Host "  Refreshing every ${Interval}s" -ForegroundColor DarkGray
     Write-Host "`n"
     while ($true) {
         $savedFormat = $OutputFormat
         $OutputFormat = 'Text'
         Action-Status
         $OutputFormat = $savedFormat
-        Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Prossimo aggiornamento tra ${Interval}s... (Ctrl+C per fermare)" -ForegroundColor DarkGray
+        Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Next refresh in ${Interval}s... (Ctrl+C to stop)" -ForegroundColor DarkGray
         Start-Sleep -Seconds $Interval
         Clear-Host
     }
-}
-
-# ---- REGISTRY AUTO-UPDATE ----
-function Action-RegistryUpdate {
-    Write-Section "Registry Auto-Update"
-    $taskName = 'ACP-Registry-Update'; $scriptPath = (Get-Item $PSCommandPath).FullName
-    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($Disable) {
-        if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Registry auto-update rimosso' }
-        else { Write-StatusDot 'INFO' 'INFO' 'Nessun auto-update configurato' }
-        return
-    }
-    if ($existing) { Write-StatusDot 'OK' 'OK' 'Registry auto-update gia configurato'; return }
-    try {
-        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Action Registry -UpdateRegistry"
-        $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '03:00AM'
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "ACP Registry auto-update (weekly)" -Force
-        Write-StatusDot 'OK' 'OK' 'Registry auto-update configurato (settimanale)'
-    } catch { Write-StatusDot 'ERR' 'ERR' "Registrazione fallita: $_" }
 }
 
 # ---- TAB COMPLETION ----
@@ -1516,6 +1506,266 @@ Register-ArgumentCompleter -CommandName '*acp-manager*','*ACP-Manager*','*acp-br
 }
 
 
+# ============================================================
+# INTERACTIVE MODE
+# ============================================================
+
+function Invoke-InteractiveAction {
+    param([string]$ActionName, [hashtable]$Params = @{})
+    $savedAction = $Action; $savedBridge = $Bridge; $savedAgentId = $AgentId
+    $savedPort = $Port; $savedTunnelId = $TunnelId; $savedAnonymous = $Anonymous; $savedDetailed = $Detailed; $savedDisable = $Disable
+    $savedLogLines = $LogLines
+    $script:Action = $ActionName
+    if ($Params.ContainsKey('Bridge')) { $script:Bridge = $Params.Bridge }
+    if ($Params.ContainsKey('AgentId')) { $script:AgentId = $Params.AgentId }
+    if ($Params.ContainsKey('Port')) { $script:Port = $Params.Port }
+    if ($Params.ContainsKey('TunnelId')) { $script:TunnelId = $Params.TunnelId }
+    if ($Params.ContainsKey('Anonymous')) { $script:Anonymous = $Params.Anonymous }
+    if ($Params.ContainsKey('Detailed')) { $script:Detailed = $Params.Detailed }
+    if ($Params.ContainsKey('Disable')) { $script:Disable = $Params.Disable }
+    if ($Params.ContainsKey('LogLines')) { $script:LogLines = $Params.LogLines }
+    switch ($ActionName) {
+        'Scan' { Action-Scan }; 'AgentInfo' { Action-AgentInfo }; 'Registry' { Action-Registry }
+        'InstallAgent' { Action-InstallAgent }; 'Update' { Action-Update }
+        'Install' { Action-Install }; 'Start' { Action-Start }; 'Stop' { Action-Stop }
+        'Restart' { Action-Restart }; 'Status' { Action-Status }
+        'Tunnel' { Action-Tunnel }; 'TunnelCreate' { Action-TunnelCreate }
+        'TunnelList' { Action-TunnelList }; 'TunnelInfo' { Action-TunnelInfo }
+        'TunnelDelete' { Action-TunnelDelete }
+        'Config' { Action-Config }; 'Diag' { Action-Diag }; 'Logs' { Action-Logs }
+        'LogClear' { Action-LogClear }; 'Autostart' { Action-Autostart }
+        'Mobile' { Action-Mobile }; 'Watch' { Action-Watch }
+    }
+    $script:Action = $savedAction; $script:Bridge = $savedBridge; $script:AgentId = $savedAgentId
+    $script:Port = $savedPort; $script:TunnelId = $savedTunnelId; $script:Anonymous = $savedAnonymous
+    $script:Detailed = $savedDetailed; $script:Disable = $savedDisable; $script:LogLines = $savedLogLines
+}
+
+function Get-AgentChoice {
+    $reg = Get-CachedRegistry
+    if (-not $reg) { return $null }
+    Write-Host "`n  Available agents:" -ForegroundColor Yellow
+    $i = 1; $list = @()
+    foreach ($a in $reg.agents) {
+        Write-Host "  [$i] $($a.id) - $($a.name) v$($a.version)" -ForegroundColor White
+        $list += $a.id; $i++
+        if ($i -gt 50) { Write-Host "  ... and $($reg.agents.Count - 50) more"; break }
+    }
+    Write-Host "  [0/b] Back"
+    $choice = Read-Host "`n  Select agent [# or ID]"
+    if ($choice -eq '0' -or $choice -eq 'b' -or $choice -eq 'B' -or -not $choice) { return $null }
+    if ($choice -match '^\d+$') { $num = [int]$choice; if ($num -ge 1 -and $num -le $list.Count) { return $list[$num-1] } }
+    $exact = $reg.agents | Where-Object { $_.id -eq $choice } | Select-Object -First 1
+    if ($exact) { return $exact.id }
+    $fuzzy = $reg.agents | Where-Object { $_.id -like "*$choice*" -or $_.name -like "*$choice*" } | Select-Object -First 1
+    if ($fuzzy) { return $fuzzy.id }
+    Write-StatusDot 'ERR' 'ERR' "Agent '$choice' not found"; return $null
+}
+
+function Get-BridgeChoice {
+    Write-Host "`n  Select bridge:" -ForegroundColor Yellow
+    Write-Host "  [1] opencode" -ForegroundColor White
+    Write-Host "  [2] kilocode" -ForegroundColor White
+    Write-Host "  [3] cursor" -ForegroundColor White
+    Write-Host "  [4] all" -ForegroundColor White
+    Write-Host "  [0/b] Back"
+    $choice = Read-Host "`n  Select [1-4]"
+    switch ($choice) {
+        '1' { return 'opencode' }; '2' { return 'kilocode' }; '3' { return 'cursor' }; '4' { return 'all' }
+        '0' { return $null }
+        'b' { return $null }
+        'B' { return $null }
+        default { return $null }
+    }
+}
+
+function Get-YesNo {
+    param([string]$Prompt)
+    $r = Read-Host "$Prompt (y/N)"
+    return ($r -eq 'y' -or $r -eq 'Y' -or $r -eq 's' -or $r -eq 'S')
+}
+
+function Press-Enter { Write-Host "`n  Press Enter to continue..." -NoNewline -ForegroundColor DarkGray; Read-Host | Out-Null }
+
+function Show-ScanMenu {
+    do {
+        Clear-Host
+        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │   🔍  Scan & Detection               │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "`n  [1] Quick Scan (installed/running only)"
+        Write-Host "  [2] Detailed Scan (with health check)"
+        Write-Host "  [3] Agent Info (detailed info on one agent)"
+        Write-Host "  [4] Registry (show official ACP registry)"
+        Write-Host "  [5] Download Registry (force update cache)"
+        Write-Host "  [0/b] Back to Main Menu"
+        $c = Read-Host "`n  Select [0-5]"
+        switch ($c) {
+            '1' { $Detailed=$false; Invoke-InteractiveAction -ActionName 'Scan'; Press-Enter }
+            '2' { Invoke-InteractiveAction -ActionName 'Scan' -Params @{Detailed=$true}; Press-Enter }
+            '3' { $aid = Get-AgentChoice; if ($aid) { Invoke-InteractiveAction -ActionName 'AgentInfo' -Params @{AgentId=$aid}; Press-Enter } }
+            '4' { Invoke-InteractiveAction -ActionName 'Registry'; Press-Enter }
+            '5' { Invoke-InteractiveAction -ActionName 'Registry' -Params @{UpdateRegistry=$true}; Press-Enter }
+            '0' { return }
+            'b' { return }
+            'B' { return }
+        }
+    } while ($true)
+}
+
+function Show-InstallMenu {
+    do {
+        Clear-Host
+        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │   📦  Install & Update               │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "`n  [1] List Registry (all available agents)"
+        Write-Host "  [2] Install an agent from registry"
+        Write-Host "  [3] Update ALL installed agents"
+        Write-Host "  [4] Update a specific agent"
+        Write-Host "  [5] Install bridges (opencode/kilocode/cursor)"
+        Write-Host "  [0/b] Back to Main Menu"
+        $c = Read-Host "`n  Select [0-5]"
+        switch ($c) {
+            '1' { Invoke-InteractiveAction -ActionName 'Registry'; Press-Enter }
+            '2' { $aid = Get-AgentChoice; if ($aid) { Invoke-InteractiveAction -ActionName 'InstallAgent' -Params @{AgentId=$aid}; Press-Enter } }
+            '3' { Invoke-InteractiveAction -ActionName 'Update' -Params @{AgentId='all'}; Press-Enter }
+            '4' { $aid = Get-AgentChoice; if ($aid) { Invoke-InteractiveAction -ActionName 'Update' -Params @{AgentId=$aid}; Press-Enter } }
+            '5' { $b = Get-BridgeChoice; if ($b) { Invoke-InteractiveAction -ActionName 'Install' -Params @{Bridge=$b}; Press-Enter } }
+            '0' { return }
+            'b' { return }
+            'B' { return }
+        }
+    } while ($true)
+}
+
+function Show-BridgeMenu {
+    do {
+        Clear-Host
+        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │   🔌  Bridge Management              │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "`n  [1] Status (bridges + detected agents)"
+        Write-Host "  [2] Start bridge(s)"
+        Write-Host "  [3] Stop bridge(s)"
+        Write-Host "  [4] Restart bridge(s)"
+        Write-Host "  [5] Install bridges"
+        Write-Host "  [6] Initial Setup (Init)"
+        Write-Host "  [0/b] Back to Main Menu"
+        $c = Read-Host "`n  Select [0-6]"
+        switch ($c) {
+            '1' { Invoke-InteractiveAction -ActionName 'Status'; Press-Enter }
+            '2' { $b = Get-BridgeChoice; if ($b) { Invoke-InteractiveAction -ActionName 'Start' -Params @{Bridge=$b}; Press-Enter } }
+            '3' { $b = Get-BridgeChoice; if ($b) { Invoke-InteractiveAction -ActionName 'Stop' -Params @{Bridge=$b}; Press-Enter } }
+            '4' { $b = Get-BridgeChoice; if ($b) { Invoke-InteractiveAction -ActionName 'Restart' -Params @{Bridge=$b}; Press-Enter } }
+            '5' { $b = Get-BridgeChoice; if ($b) { Invoke-InteractiveAction -ActionName 'Install' -Params @{Bridge=$b}; Press-Enter } }
+            '6' { Invoke-InteractiveAction -ActionName 'Init'; Press-Enter }
+            '0' { return }
+            'b' { return }
+            'B' { return }
+        }
+    } while ($true)
+}
+
+function Show-TunnelMenu {
+    do {
+        Clear-Host
+        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │   🌐  DevTunnel                      │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "`n  [1] Tunnel + Bridge (start tunnel + bridge)"
+        Write-Host "  [2] Create Persistent Tunnel"
+        Write-Host "  [3] List Tunnels"
+        Write-Host "  [4] Tunnel Info"
+        Write-Host "  [5] Delete Tunnel"
+        Write-Host "  [0/b] Back to Main Menu"
+        $c = Read-Host "`n  Select [0-5]"
+        switch ($c) {
+            '1' { $b = Get-BridgeChoice; if ($b -and $b -ne 'all') {
+                    $anon = Get-YesNo "  Use anonymous tunnel?"
+                    Invoke-InteractiveAction -ActionName 'Tunnel' -Params @{Bridge=$b; Anonymous=$anon}
+                    Press-Enter
+                } elseif ($b -eq 'all') { Write-StatusDot 'WARN' 'WARN' 'Tunnel requires a specific bridge (not all)'; Start-Sleep 2 } }
+            '2' { $anon = Get-YesNo "  Anonymous tunnel?"
+                  Invoke-InteractiveAction -ActionName 'TunnelCreate' -Params @{Anonymous=$anon}; Press-Enter }
+            '3' { Invoke-InteractiveAction -ActionName 'TunnelList'; Press-Enter }
+            '4' { $tid = Read-Host "  Tunnel ID (Enter to auto-detect)"
+                  if ($tid) { Invoke-InteractiveAction -ActionName 'TunnelInfo' -Params @{TunnelId=$tid} }
+                  else { Invoke-InteractiveAction -ActionName 'TunnelInfo' }
+                  Press-Enter }
+            '5' { $tid = Read-Host "  Tunnel ID to delete"
+                  if ($tid) { Invoke-InteractiveAction -ActionName 'TunnelDelete' -Params @{TunnelId=$tid}; Press-Enter } }
+            '0' { return }
+            'b' { return }
+            'B' { return }
+        }
+    } while ($true)
+}
+
+function Show-SystemMenu {
+    do {
+        Clear-Host
+        Write-Host "  ┌──────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │   ⚙️   System                         │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host "`n  [1] Show Configuration"
+        Write-Host "  [2] System Diagnostics"
+        Write-Host "  [3] Show Logs"
+        Write-Host "  [4] Clear Logs"
+        Write-Host "  [5] Configure Auto-start"
+        Write-Host "  [6] Remove Auto-start"
+        Write-Host "  [7] Mobile Integration Guide"
+        Write-Host "  [8] Watch Mode (live monitoring)"
+        Write-Host "  [0/b] Back to Main Menu"
+        $c = Read-Host "`n  Select [0-8]"
+        switch ($c) {
+            '1' { Invoke-InteractiveAction -ActionName 'Config'; Press-Enter }
+            '2' { Invoke-InteractiveAction -ActionName 'Diag'; Press-Enter }
+            '3' { $lines = Read-Host "  Number of log lines [50]"; if (-not $lines) { $lines = 50 }
+                  Invoke-InteractiveAction -ActionName 'Logs' -Params @{LogLines=[int]$lines}; Press-Enter }
+            '4' { Invoke-InteractiveAction -ActionName 'LogClear'; Press-Enter }
+            '5' { $b = Get-BridgeChoice; if ($b -and $b -ne 'all') {
+                    Invoke-InteractiveAction -ActionName 'Autostart' -Params @{Bridge=$b}
+                  } elseif ($b -eq 'all') {
+                    Invoke-InteractiveAction -ActionName 'Autostart' -Params @{Bridge='opencode'}
+                  }; Press-Enter }
+            '6' { Invoke-InteractiveAction -ActionName 'Autostart' -Params @{Disable=$true}; Press-Enter }
+            '7' { Invoke-InteractiveAction -ActionName 'Mobile'; Press-Enter }
+            '8' { Invoke-InteractiveAction -ActionName 'Watch'; Press-Enter }
+            '0' { return }
+            'b' { return }
+            'B' { return }
+        }
+    } while ($true)
+}
+
+function Action-Interactive {
+    do {
+        Clear-Host
+        Write-Host "+-----------------------------------------------+" -ForegroundColor Cyan
+        Write-Host "|         ACP Manager v$($Script:Version) - Interactive          |" -ForegroundColor Cyan
+        Write-Host "+-----------------------------------------------+" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  [1] Scan and Detection    - Scan 37+ agents, agent info, registry"
+        Write-Host "  [2] Install and Update    - Install/update agents from registry"
+        Write-Host "  [3] Bridge Management   - Start, stop, restart, status, install"
+        Write-Host "  [4] DevTunnel           - Tunnel, create, list, info, delete"
+        Write-Host "  [5] System              - Config, diag, logs, autostart, mobile"
+        Write-Host "  [6] Help                - Show complete help"
+        Write-Host "  [7] Exit"
+        Write-Host ""
+        $choice = Read-Host "  Select [1-7]"
+        switch ($choice) {
+            '1' { Show-ScanMenu }
+            '2' { Show-InstallMenu }
+            '3' { Show-BridgeMenu }
+            '4' { Show-TunnelMenu }
+            '5' { Show-SystemMenu }
+            '6' { Clear-Host; Show-Help; Press-Enter }
+            '7' { Write-Host ''; Write-Host '  Goodbye!' -ForegroundColor Green; return }
+        }
+    } while ($true)
+}
 # ============================================================
 # ACTION ROUTER
 # ============================================================
@@ -1546,6 +1796,6 @@ switch ($Action) {
     'InstallAgent'  { Action-InstallAgent }
     'Update'        { Action-Update }
     'Watch'         { Action-Watch }
-    'RegistryUpdate' { Action-RegistryUpdate }
+    'Interactive'   { Action-Interactive }
     'Help'          { Show-Help }
 }
