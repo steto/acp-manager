@@ -1752,7 +1752,7 @@ function Action-Interactive {
         Write-Host "  [4] DevTunnel           - Tunnel, create, list, info, delete"
         Write-Host "  [5] System              - Config, diag, logs, autostart, mobile"
         Write-Host "  [6] Help                - Show complete help"
-        Write-Host "  [7] Exit"
+        Write-Host "  [7/q] Exit"
         Write-Host ""
         $choice = Read-Host "  Select [1-7]"
         switch ($choice) {
@@ -1763,6 +1763,8 @@ function Action-Interactive {
             '5' { Show-SystemMenu }
             '6' { Clear-Host; Show-Help; Press-Enter }
             '7' { Write-Host ''; Write-Host '  Goodbye!' -ForegroundColor Green; return }
+            'q' { Write-Host ''; Write-Host '  Goodbye!' -ForegroundColor Green; return }
+            'Q' { Write-Host ''; Write-Host '  Goodbye!' -ForegroundColor Green; return }
         }
     } while ($true)
 }
