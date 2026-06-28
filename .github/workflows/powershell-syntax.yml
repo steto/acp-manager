@@ -1,0 +1,68 @@
+name: PowerShell Syntax Check
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - '*.ps1'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - '*.ps1'
+  workflow_dispatch:
+
+jobs:
+  validate-syntax:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $hasErrors = $false
+          $files = Get-ChildItem -Path "${{ github.workspace }}" -Filter *.ps1 -Recurse
+
+          if ($files.Count -eq 0) {
+            Write-Host "::warning::No .ps1 files found"
+            exit 0
+          }
+
+          foreach ($file in $files) {
+            $errors = @()
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName,
+              [ref]$null,
+              [ref]$errors
+            )
+
+            if ($errors.Count -gt 0) {
+              $hasErrors = $true
+              Write-Host "::group::$($file.Name)"
+              Write-Host "❌ $($file.Name) — $($errors.Count) error(s)"
+              Write-Host ""
+
+              foreach ($e in $errors) {
+                $line = $e.Extent.StartLineNumber
+                $col  = $e.Extent.StartColumnNumber
+                $msg  = $e.Message -replace "`n|`r", " "
+                Write-Host "::error file=$($file.Name),line=$line,col=$col::$msg"
+                Write-Host "  Line $line, Col $col — $msg"
+              }
+
+              Write-Host "::endgroup::"
+            } else {
+              Write-Host "✅ $($file.Name) — syntax OK"
+            }
+          }
+
+          if ($hasErrors) {
+            Write-Host ""
+            Write-Host "❌ One or more files have syntax errors."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "✅ All files passed syntax validation."
