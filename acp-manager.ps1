@@ -221,7 +221,7 @@ function Save-Config {
 
 function New-DefaultConfig {
     return @{
-        version = '4.0'; profile = 'default'
+        version = $Script:Version; profile = 'default'
         profiles = @{
             default = @{
                 ports = @{ opencode=8081; kilocode=8082; cursor=8083 }
@@ -964,7 +964,7 @@ $(Format-HelpAction 'Help'        'This help screen')
 
 
 # ============================================================
-# v4.0 ENHANCEMENTS: Progress, Caching, Detection+, Watch
+# ENHANCEMENTS: Progress, Caching, Detection+, Watch
 # ============================================================
 
 # ---- Write-Progress Wrapper ----
