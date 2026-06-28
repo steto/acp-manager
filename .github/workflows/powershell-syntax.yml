@@ -90,15 +90,14 @@ jobs:
             $results = Invoke-ScriptAnalyzer -Path $file.FullName -Severity Error, Warning
 
             if ($results.Count -gt 0) {
-              $hasErrors = $true
               Write-Host "🔍 $($file.Name) — $($results.Count) issue(s)"
               Write-Host ""
 
-              $ruleCount = @{}
+              $seen = @{}
               foreach ($r in $results) {
-                $key = "$($r.ScriptName):$($r.Line)"
-                if (-not $ruleCount.ContainsKey($key)) {
-                  $ruleCount[$key] = $true
+                $key = $r.Line
+                if (-not $seen.ContainsKey($key)) {
+                  $seen[$key] = $true
                   $sev = $r.Severity.ToString().ToLower()
                   $msg = $r.Message -replace "`n|`r", " "
                   $ann = if ($sev -eq 'error') { 'error' } else { 'warning' }
@@ -106,6 +105,10 @@ jobs:
                   Write-Host "  [$($r.Severity)] $msg"
                   Write-Host "          Rule: $($r.RuleName) — Line $($r.Line), Col $($r.Column)"
                   Write-Host ""
+                }
+
+                if ($r.Severity -eq 'Error') {
+                  $hasErrors = $true
                 }
               }
             } else {
@@ -117,7 +120,7 @@ jobs:
 
           if ($hasErrors) {
             Write-Host ""
-            Write-Host "❌ PSScriptAnalyzer found issues. Check annotations above."
+            Write-Host "❌ PSScriptAnalyzer found errors. Check annotations above."
             exit 1
           }
 
