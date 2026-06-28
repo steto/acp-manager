@@ -186,8 +186,8 @@ function Test-PortOpen {
     param([int]$Port)
     if ($Port -le 0) { return $false }
     try {
-        $r = Test-NetConnection -ComputerName localhost -Port $Port -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
-        return [bool]$r
+        $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        return [bool]$c
     } catch { return $false }
 }
 
@@ -362,20 +362,26 @@ function Get-AgentDetection {
             "$env:LOCALAPPDATA\Programs",
             "$env:ProgramFiles",
             "${env:ProgramFiles(x86)}",
-            "$env:LOCALAPPDATA\Microsoft\WinGet\Packages",
-            "$env:USERPROFILE"
+            "$env:LOCALAPPDATA\Microsoft\WinGet\Packages"
         )
+        # Short ids (e.g. go, uv, n8n) produce false positives on substring
+        # matches, so only broaden the search to USERPROFILE for longer ids.
+        if ($id.Length -ge 4) { $searchPaths += "$env:USERPROFILE" }
         foreach ($sp in $searchPaths) {
             $found = Get-ChildItem -Path $sp -Filter "*$id*" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($found) {
+                if ($id.Length -lt 4 -and ($found.Name -cne $id -and $found.Name -cne "$id.exe")) { continue }
                 $result.Installed = $true; $result.InstallMethod = 'KnownPath'
                 $result.InstallDetail = $found.FullName
                 break
             }
         }
         if (-not $result.Installed) {
-            $found = Get-ChildItem -Path "$env:LOCALAPPDATA\Microsoft\DevTunnels" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { $result.Installed = $true; $result.InstallMethod = 'KnownPath'; $result.InstallDetail = $found.FullName }
+            $dtPath = "$env:LOCALAPPDATA\Microsoft\DevTunnels"
+            if ((Test-Path $dtPath) -and (Test-IdMatch -Token $id -Text $dtPath)) {
+                $found = Get-ChildItem -Path $dtPath -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($found) { $result.Installed = $true; $result.InstallMethod = 'KnownPath'; $result.InstallDetail = $found.FullName }
+            }
         }
     }
 
@@ -388,7 +394,7 @@ function Get-AgentDetection {
         )
         foreach ($rp in $regPaths) {
             $entries = Get-ItemProperty $rp -ErrorAction SilentlyContinue | Where-Object {
-                $_.DisplayName -and ($_.DisplayName -match $id -or $_.DisplayName -match $name)
+                $_.DisplayName -and (Test-IdMatch -Token $id -Text $_.DisplayName -or Test-IdMatch -Token $name -Text $_.DisplayName)
             }
             if ($entries) {
                 $result.Installed = $true; $result.InstallMethod = 'Registry'
@@ -976,7 +982,10 @@ function Write-ScanProgress {
 function Clear-ScanProgress { Write-Progress -Activity "Scanning ACP agents" -Completed }
 
 # ---- Caching System ----
-$Script:NpmCache = $null; $Script:CargoCache = $null; $Script:WingetCache = $null; $Script:CacheTime = @{}
+$Script:NpmCache = $null; $Script:CargoCache = $null; $Script:WingetCache = $null
+$Script:PipCache = $null; $Script:UvxCache = $null; $Script:ChocoCache = $null
+$Script:ScoopCache = $null; $Script:DotnetCache = $null; $Script:GoBinCache = $null
+$Script:CacheTime = @{}
 function Get-CachedNpmList {
     $now = Get-Date
     if ($Script:NpmCache -and $Script:CacheTime.Npm -and (($now - $Script:CacheTime.Npm).TotalSeconds -lt 120)) { return $Script:NpmCache }
@@ -995,29 +1004,102 @@ function Get-CachedWingetList {
     try { $Script:WingetCache = winget list --accept-source-agreements 2>$null; $Script:CacheTime.Winget = $now } catch { $Script:WingetCache = $null }
     return $Script:WingetCache
 }
+function Get-CachedPipList {
+    $now = Get-Date
+    if ($Script:PipCache -and $Script:CacheTime.Pip -and (($now - $Script:CacheTime.Pip).TotalSeconds -lt 120)) { return $Script:PipCache }
+    try { $Script:PipCache = pip list --format=json 2>$null | ConvertFrom-Json; $Script:CacheTime.Pip = $now } catch { $Script:PipCache = $null }
+    return $Script:PipCache
+}
+function Get-CachedUvxList {
+    $now = Get-Date
+    if ($Script:UvxCache -and $Script:CacheTime.Uvx -and (($now - $Script:CacheTime.Uvx).TotalSeconds -lt 120)) { return $Script:UvxCache }
+    try { $Script:UvxCache = uv tool list 2>$null; $Script:CacheTime.Uvx = $now } catch { $Script:UvxCache = $null }
+    return $Script:UvxCache
+}
+function Get-CachedChocoList {
+    $now = Get-Date
+    if ($Script:ChocoCache -and $Script:CacheTime.Choco -and (($now - $Script:CacheTime.Choco).TotalSeconds -lt 120)) { return $Script:ChocoCache }
+    try { $Script:ChocoCache = choco list -li --limit-output 2>$null; $Script:CacheTime.Choco = $now } catch { $Script:ChocoCache = $null }
+    return $Script:ChocoCache
+}
+function Get-CachedScoopList {
+    $now = Get-Date
+    if ($Script:ScoopCache -and $Script:CacheTime.Scoop -and (($now - $Script:CacheTime.Scoop).TotalSeconds -lt 120)) { return $Script:ScoopCache }
+    try { $Script:ScoopCache = scoop list 2>$null; $Script:CacheTime.Scoop = $now } catch { $Script:ScoopCache = $null }
+    return $Script:ScoopCache
+}
+function Get-CachedDotnetList {
+    $now = Get-Date
+    if ($Script:DotnetCache -and $Script:CacheTime.Dotnet -and (($now - $Script:CacheTime.Dotnet).TotalSeconds -lt 120)) { return $Script:DotnetCache }
+    try { $Script:DotnetCache = dotnet tool list -g 2>$null; $Script:CacheTime.Dotnet = $now } catch { $Script:DotnetCache = $null }
+    return $Script:DotnetCache
+}
+function Get-CachedGoBin {
+    $now = Get-Date
+    if ($Script:GoBinCache -and $Script:CacheTime.GoBin -and (($now - $Script:CacheTime.GoBin).TotalSeconds -lt 120)) { return $Script:GoBinCache }
+    try {
+        $bin = go env GOBIN 2>$null
+        if (-not $bin) { $gp = go env GOPATH 2>$null; if ($gp) { $bin = Join-Path $gp 'bin' } }
+        if ($bin -and (Test-Path $bin)) { $Script:GoBinCache = @(Get-ChildItem $bin -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) }
+        else { $Script:GoBinCache = @() }
+        $Script:CacheTime.GoBin = $now
+    } catch { $Script:GoBinCache = @() }
+    return $Script:GoBinCache
+}
 
 # ---- Expanded Detection Methods ----
+
+# Word-boundary, case-insensitive token match. Prevents short ids such as
+# 'go', 'uv', 'n8n' from matching 'good', 'uvue', 'xn8n2'.
+function Test-IdMatch {
+    param([string]$Token, [string]$Text)
+    if (-not $Token -or -not $Text) { return $false }
+    $pattern = '(?i)(?<![a-z0-9])' + [regex]::Escape($Token) + '(?![a-z0-9])'
+    return [bool]($Text -match $pattern)
+}
 function Test-AgentPip { param([string]$Id, [string]$Pkg)
     if (-not (Test-Cmd 'pip')) { return $null }
-    try { $list = pip list --format=json 2>$null | ConvertFrom-Json; if ($list) { $f = $list | Where-Object { $_.name -eq $Pkg -or $_.name -eq $Id }; if ($f) { return @{Installed=$true;Version=$f.version;Method='pip';Detail="pip: $($f.name) $($f.version)"} } } } catch {}; return $null }
+    try {
+        $list = Get-CachedPipList
+        if ($list) { $f = $list | Where-Object { $_.name -eq $Pkg -or $_.name -eq $Id -or (Test-IdMatch -Token $Pkg -Text $_.name) } | Select-Object -First 1; if ($f) { return @{Installed=$true;Version=$f.version;Method='pip';Detail="pip: $($f.name) $($f.version)"} } }
+    } catch {}; return $null }
 function Test-AgentUvx { param([string]$Id, [string]$Pkg)
     if (-not (Test-Cmd 'uv')) { return $null }
-    try { $list = uv tool list 2>$null; if ($list -match $Id -or $list -match $Pkg) { return @{Installed=$true;Version='';Method='uvx';Detail="uv tool: $Id"} } } catch {}; return $null }
+    try {
+        $list = Get-CachedUvxList
+        if ($list) {
+            foreach ($line in $list) {
+                $pkgToken = (($line -replace '^\s+','') -split '\s+' | Select-Object -First 1)
+                if ((Test-IdMatch -Token $Pkg -Text $pkgToken) -or (Test-IdMatch -Token $Id -Text $pkgToken)) { return @{Installed=$true;Version='';Method='uvx';Detail="uv tool: $pkgToken"} }
+            }
+        }
+    } catch {}; return $null }
 function Test-AgentWinget { param([string]$Id)
     if (-not (Test-Cmd 'winget')) { return $null }
-    try { $list = Get-CachedWingetList; if ($list -match $Id) { return @{Installed=$true;Version='';Method='winget';Detail="winget: $Id"} } } catch {}; return $null }
+    try { $list = Get-CachedWingetList; if ($list) { $hit = $list | Where-Object { Test-IdMatch -Token $Id -Text $_ } | Select-Object -First 1; if ($hit) { return @{Installed=$true;Version='';Method='winget';Detail="winget: $Id"} } } } catch {}; return $null }
 function Test-AgentChoco { param([string]$Id)
     if (-not (Test-Cmd 'choco')) { return $null }
-    try { $list = choco list -li --limit-output 2>$null; if ($list -match $Id) { return @{Installed=$true;Version='';Method='choco';Detail="choco: $Id"} } } catch {}; return $null }
+    try {
+        $list = Get-CachedChocoList
+        if ($list) {
+            foreach ($line in $list) { $nameToken = ($line -split '\|')[0]; if (Test-IdMatch -Token $Id -Text $nameToken) { return @{Installed=$true;Version='';Method='choco';Detail="choco: $nameToken"} } }
+        }
+    } catch {}; return $null }
 function Test-AgentScoop { param([string]$Id)
     if (-not (Test-Cmd 'scoop')) { return $null }
-    try { $list = scoop list 2>$null; if ($list -match $Id) { return @{Installed=$true;Version='';Method='scoop';Detail="scoop: $Id"} } } catch {}; return $null }
+    try { $list = Get-CachedScoopList; if ($list) { $hit = $list | Where-Object { Test-IdMatch -Token $Id -Text $_ } | Select-Object -First 1; if ($hit) { return @{Installed=$true;Version='';Method='scoop';Detail="scoop: $Id"} } } } catch {}; return $null }
 function Test-AgentDotnet { param([string]$Id)
     if (-not (Test-Cmd 'dotnet')) { return $null }
-    try { $list = dotnet tool list -g 2>$null; if ($list -match $Id) { return @{Installed=$true;Version='';Method='dotnet';Detail="dotnet tool: $Id"} } } catch {}; return $null }
+    try { $list = Get-CachedDotnetList; if ($list) { $hit = $list | Where-Object { Test-IdMatch -Token $Id -Text $_ } | Select-Object -First 1; if ($hit) { return @{Installed=$true;Version='';Method='dotnet';Detail="dotnet tool: $Id"} } } } catch {}; return $null }
 function Test-AgentGo { param([string]$Name)
     if (-not (Test-Cmd 'go')) { return $null }
-    try { $bin = go env GOBIN 2>$null; if (-not $bin) { $gp = go env GOPATH 2>$null; if ($gp) { $bin = Join-Path $gp 'bin' } }; if ($bin -and (Test-Path $bin)) { $f = Get-ChildItem $bin -Filter "*$Name*" -ErrorAction SilentlyContinue | Select-Object -First 1; if ($f) { return @{Installed=$true;Version='';Method='go';Detail="go: $($f.Name)"} } } } catch {}; return $null }
+    try {
+        $bins = Get-CachedGoBin
+        if ($bins) {
+            $f = $bins | Where-Object { $base = $_ -replace '\.exe$',''; ($base -eq $Name) -or (Test-IdMatch -Token $Name -Text $base) } | Select-Object -First 1
+            if ($f) { return @{Installed=$true;Version='';Method='go';Detail="go: $f"} }
+        }
+    } catch {}; return $null }
 
 # ---- Version Comparison ----
 function Compare-AgentVersions {
