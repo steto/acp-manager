@@ -66,3 +66,60 @@ jobs:
 
           Write-Host ""
           Write-Host "✅ All files passed syntax validation."
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Force -AllowClobber -SkipPublisherCheck
+          Write-Host "✅ PSScriptAnalyzer installed: $(Get-Module -Name PSScriptAnalyzer -ListAvailable | Select-Object -ExpandProperty Version)"
+
+      - name: Run PSScriptAnalyzer lint
+        shell: pwsh
+        run: |
+          $hasErrors = $false
+          $files = Get-ChildItem -Path "${{ github.workspace }}" -Filter *.ps1 -Recurse
+
+          if ($files.Count -eq 0) {
+            Write-Host "::warning::No .ps1 files found"
+            exit 0
+          }
+
+          foreach ($file in $files) {
+            Write-Host "::group::$($file.Name)"
+
+            $results = Invoke-ScriptAnalyzer -Path $file.FullName -Severity Error, Warning
+
+            if ($results.Count -gt 0) {
+              $hasErrors = $true
+              Write-Host "🔍 $($file.Name) — $($results.Count) issue(s)"
+              Write-Host ""
+
+              $ruleCount = @{}
+              foreach ($r in $results) {
+                $key = "$($r.ScriptName):$($r.Line)"
+                if (-not $ruleCount.ContainsKey($key)) {
+                  $ruleCount[$key] = $true
+                  $sev = $r.Severity.ToString().ToLower()
+                  $msg = $r.Message -replace "`n|`r", " "
+                  $ann = if ($sev -eq 'error') { 'error' } else { 'warning' }
+                  Write-Host "::$ann file=$($file.Name),line=$($r.Line),col=$($r.Column)::$msg"
+                  Write-Host "  [$($r.Severity)] $msg"
+                  Write-Host "          Rule: $($r.RuleName) — Line $($r.Line), Col $($r.Column)"
+                  Write-Host ""
+                }
+              }
+            } else {
+              Write-Host "✅ $($file.Name) — lint OK"
+            }
+
+            Write-Host "::endgroup::"
+          }
+
+          if ($hasErrors) {
+            Write-Host ""
+            Write-Host "❌ PSScriptAnalyzer found issues. Check annotations above."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "✅ PSScriptAnalyzer: all files passed lint."
