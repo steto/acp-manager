@@ -180,10 +180,13 @@ function Get-ProcessByFilter {
 }
 
 function Get-ProcessUptime {
+    # Works with CIM Win32_Process (.CreationDate) and System.Diagnostics.Process (.StartTime).
     param($Process)
     try {
-        if (-not $Process.CreationDate) { return '-' }
-        $start = [Management.ManagementDateTimeConverter]::ToDateTime($Process.CreationDate)
+        $start = $null
+        if ($Process.CreationDate) { $start = [Management.ManagementDateTimeConverter]::ToDateTime($Process.CreationDate) }
+        elseif ($Process.StartTime) { $start = $Process.StartTime }
+        if (-not $start) { return '-' }
         return Format-Duration -Seconds ([int]((Get-Date) - $start).TotalSeconds)
     } catch { return '-' }
 }
@@ -202,6 +205,35 @@ function Confirm-Prompt {
     if ($Yes) { return $true }
     $r = Read-Host "$Prompt (y/N)"
     return ($r -eq 'y' -or $r -eq 'Y' -or $r -eq 's' -or $r -eq 'S')
+}
+
+function Get-NpmPackageName {
+    # Strip a trailing @version but keep a leading @scope.
+    # Handles: '@scope/name', 'pkg', 'pkg@1.2.3', '@scope/name@latest'.
+    # (The naive '-split "@")[0]' returns '' for scoped packages.)
+    param([string]$PackageSpec)
+    if (-not $PackageSpec) { return '' }
+    return $PackageSpec -replace '@[^/]*$',''
+}
+
+function Get-UvxPackageName {
+    param([string]$PackageSpec)
+    if (-not $PackageSpec) { return '' }
+    return ($PackageSpec -split '==')[0]
+}
+
+function Get-CleanVersion {
+    # Extract a version-like token from raw --version output, skipping
+    # error/traceback noise (e.g. 'Traceback (most recent ...', 'node:internal').
+    param([object]$Output)
+    foreach ($line in @($Output)) {
+        $s = "$line".Trim()
+        if (-not $s) { continue }
+        if ($s -match 'Traceback|Error|Exception|node:internal|^\s*at\s|warn|panic|not found|cannot|unable|No such') { continue }
+        $m = [regex]::Match($s, 'v?(\d[\d.]*(?:[-_][\w.+]+)?)')
+        if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    }
+    return ''
 }
 
 # ============================================================
@@ -342,14 +374,14 @@ function Get-AgentDetection {
         if ($cmdInfo) {
             $result.Installed = $true; $result.InstallMethod = 'PATH'
             $result.InstallDetail = $cmdInfo.Source
-            try { $v = & $exe --version 2>&1 | Select-Object -First 1; if ($v) { $result.InstalledVersion = "$v".Trim() } } catch {}
+            try { $v = Get-CleanVersion (& $exe --version 2>&1); if ($v) { $result.InstalledVersion = $v } } catch {}
             break
         }
     }
 
     # 2. npm global packages
     if (-not $result.Installed -and $dist.npx) {
-        $npmPkg = ($dist.npx.package -split '@')[0]
+        $npmPkg = Get-NpmPackageName $dist.npx.package
         try {
             $npmList = Get-CachedNpmList
             if ($npmList -and $npmList.dependencies.$npmPkg) {
@@ -366,11 +398,11 @@ function Get-AgentDetection {
             $cargoList = Get-CachedCargoList
             if ($cargoList) {
                 # Match full package names (avoid substring false positives)
-                $cargoPattern = "(?im)^\s*$id\s+v?[\d.]+"
+                $cargoPattern = "(?im)^\s*$([regex]::Escape($id))\s+v?[\d.]+"
                 if ($cargoList -match $cargoPattern) {
                 $result.Installed = $true; $result.InstallMethod = 'cargo'
                 $result.InstallDetail = "cargo install: $id"
-                $m = [regex]::Match($cargoList, "$id\s+v?([\d.]+)")
+                $m = [regex]::Match($cargoList, "(?im)^\s*$([regex]::Escape($id))\s+v?([\d.]+)")
                 if ($m.Success) { $result.InstalledVersion = $m.Groups[1].Value }
             }
             }
@@ -416,7 +448,7 @@ function Get-AgentDetection {
         foreach ($rp in $regPaths) {
             $entries = Get-ItemProperty $rp -ErrorAction SilentlyContinue | Where-Object {
                 $_.DisplayName -and ((Test-IdMatch -Token $id -Text $_.DisplayName) -or (Test-IdMatch -Token $name -Text $_.DisplayName))
-            }
+            } | Select-Object -First 1
             if ($entries) {
                 $result.Installed = $true; $result.InstallMethod = 'Registry'
                 $result.InstalledVersion = $entries.DisplayVersion; $result.InstallDetail = $entries.DisplayName
@@ -452,21 +484,28 @@ function Get-AgentDetection {
         if ($allProcs) {
             $result.Running = $true; $result.ProcessCount = $allProcs.Count
             $firstProc = $allProcs | Select-Object -First 1
-            $result.ProcessId = $firstProc.ProcessId
-            $result.RAM_MB = [Math]::Round($firstProc.WorkingSetSize / 1MB, 1)
+            # Normalize across object types:
+            #   CIM Win32_Process          -> ProcessId, WorkingSetSize, Name (with .exe)
+            #   System.Diagnostics.Process -> Id,        WorkingSet64,  ProcessName (no .exe)
+            $procId   = if ($firstProc.ProcessId) { $firstProc.ProcessId } elseif ($firstProc.Id) { $firstProc.Id } else { 0 }
+            $procName = if ($firstProc.Name) { $firstProc.Name } elseif ($firstProc.ProcessName) { $firstProc.ProcessName } else { $id }
+            $procName = "$procName" -replace '\.exe$',''
+            $wsBytes  = if ($firstProc.WorkingSetSize) { [long]$firstProc.WorkingSetSize } elseif ($firstProc.WorkingSet64) { [long]$firstProc.WorkingSet64 } else { 0 }
+            $result.ProcessId = $procId
+            $result.RAM_MB = [Math]::Round($wsBytes / 1MB, 1)
             $result.Uptime = Get-ProcessUptime -Process $firstProc
             $result.Status = 'Running'; $result.StatusIcon = 'RUN'
 
             if ($Detailed) {
                 try {
-                    $counter = Get-Counter "\Process($($firstProc.Name))*\% Processor Time" -ErrorAction SilentlyContinue
+                    $counter = Get-Counter "\Process($procName)*\% Processor Time" -ErrorAction SilentlyContinue
                     if ($counter) {
                         $cpuVal = ($counter.CounterSamples | Where-Object { $_.Status -eq 0 } | Measure-Object CookedValue -Average).Average
                         $result.CPU_Pct = [Math]::Round($cpuVal, 1); $result.Working = ($cpuVal -gt 0.5)
                     }
                 } catch {}
                 try {
-                    $tcpConns = Get-NetTCPConnection -OwningProcess $firstProc.ProcessId -ErrorAction SilentlyContinue
+                    $tcpConns = Get-NetTCPConnection -OwningProcess $procId -ErrorAction SilentlyContinue
                     if ($tcpConns) {
                         $result.NetworkActive = ($tcpConns.State -contains 'Established')
                         foreach ($conn in $tcpConns) { $result.Ports += @{ Port = $conn.LocalPort; State = $conn.State } }
@@ -570,7 +609,7 @@ function Action-Start {
 function Start-Bridge {
     param([string]$Name, [string]$DisplayName, [int]$Port)
     $check = $Script:BridgeCmds[$Name].check; $startCmd = $Script:BridgeCmds[$Name].start -f $Port; $checkExe = ($check -split '\s')[0]
-    $existing = Get-ProcessByFilter -Filter $check
+    $existing = Get-ProcessByFilter -Filter $check | Select-Object -First 1
     if ($existing) { $mem = [Math]::Round($existing.WorkingSetSize/1MB,1); Write-StatusDot 'RUN' 'RUN' "${DisplayName} already active (PID:$($existing.ProcessId) RAM:${mem}MB)"; return $existing }
     if (-not (Test-Cmd $checkExe)) { Write-StatusDot 'ERR' 'ERR' "${DisplayName} not installed"; return $null }
     try {
@@ -601,7 +640,13 @@ function Stop-Bridge {
 }
 
 function Action-Restart {
-    Write-Section "Restarting Bridge"; $savedBridge = $Bridge; Action-Stop; Start-Sleep -Seconds 2; $Bridge = $savedBridge; Action-Start
+    # Restart only the bridges; leave DevTunnel running (don't reuse Action-Stop,
+    # which kills devtunnel when -Bridge all, without restarting it).
+    Write-Section "Restarting Bridge"
+    $bridges = if ($Bridge -eq 'all') { @('opencode','kilocode','cursor') } else { @($Bridge) }
+    foreach ($b in $bridges) { Stop-Bridge -Name $b }
+    Start-Sleep -Seconds 2
+    Action-Start
 }
 
 # ============================================================
@@ -613,7 +658,7 @@ function Action-Status {
     foreach ($b in $bridges) {
         $name = $Script:BridgeNames[$b]; $check = $Script:BridgeCmds[$b].check
         $checkExe = ($check -split '\s')[0]; $bp = Get-BridgePort -BridgeName $b
-        $p = Get-ProcessByFilter -Filter $check; $installed = Test-Cmd $checkExe
+        $p = Get-ProcessByFilter -Filter $check | Select-Object -First 1; $installed = Test-Cmd $checkExe
         if ($p) {
             $mem = [Math]::Round($p.WorkingSetSize/1MB,1); $uptime = Get-ProcessUptime -Process $p; $healthy = Test-PortOpen -Port $bp
             $healthIcon = if ($healthy) { 'TCP OK' } else { 'No response' }
@@ -623,7 +668,7 @@ function Action-Status {
         }
     }
     if ($OutputFormat -eq 'Json') {
-        $dev = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue
+        $dev = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue | Select-Object -First 1
         $agents = @()
         $regJ = Get-CachedRegistry
         if ($regJ) {
@@ -636,7 +681,7 @@ function Action-Status {
     }
     Write-Section "ACP Bridge Status"
     Write-Table -Data $rows -Properties @('Bridge','PID','Port','RAM','Status','Health','Uptime') -Headers @('Bridge','PID','Port','RAM','Status','Health','Uptime')
-    $t = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue
+    $t = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($t) { Write-StatusDot 'RUN' 'RUN' "DevTunnel running (PID:$($t.Id))" }
     else { if (Test-Cmd 'devtunnel') { Write-StatusDot 'STOP' 'STOP' 'DevTunnel stopped' } else { Write-StatusDot 'INFO' 'INFO' 'DevTunnel not installed' } }
 
@@ -794,7 +839,7 @@ function Action-Tunnel {
     }
     $bp = Get-BridgePort -BridgeName $Bridge
     if ($Bridge -ne 'cursor') { $p = Start-Bridge -Name $Bridge -DisplayName $Script:BridgeNames[$Bridge] -Port $bp; if (-not $p) { Write-StatusDot 'ERR' 'ERR' "Bridge $Bridge not started"; return } }
-    else { Write-StatusDot 'INFO' 'INFO' 'Cursor - start from UI, port 3000'; $bp = 3000 }
+    else { Write-StatusDot 'INFO' 'INFO' "Cursor - start from UI (tunneling configured port $bp)" }
 
     $anonFromCfg = ($tunnelCfg -and $tunnelCfg.profiles.$Profile.anonymous_tunnel -eq $true)
     $anonFlag = if ($Anonymous -or $anonFromCfg) { ' --allow-anonymous' } else { '' }
@@ -803,6 +848,7 @@ function Action-Tunnel {
     try {
         $tp = Start-Process cmd.exe -ArgumentList "/c devtunnel $tunnelArg" -WindowStyle Hidden -PassThru -RedirectStandardOutput $lf -RedirectStandardError $lf
         Start-Sleep -Seconds 4
+        if (-not $tp -or $tp.HasExited) { Write-StatusDot 'ERR' 'ERR' "DevTunnel exited immediately. Check login (devtunnel user login) and log: $lf"; return }
         if (Test-Path $lf) {
             $o = Get-Content $lf -Raw; $m = [regex]::Match($o,'https?://[a-zA-Z0-9._-]+\.devtunnels\.ms:\d+')
             if ($m.Success) {
@@ -824,13 +870,20 @@ function Action-TunnelCreate {
     try {
         $r = devtunnel create $anonFlag 2>&1
         if ($LASTEXITCODE -eq 0) {
-            $idMatch = [regex]::Match($r,'[a-zA-Z0-9_-]+')
-            if ($idMatch.Success -and $idMatch.Value.Length -gt 3) {
-                Write-StatusDot 'OK' 'OK' "Tunnel created: $($idMatch.Value)"
+            # Look for the id after an "ID:"/"ID " label first, then a long token.
+            $tid = $null
+            $m = [regex]::Match($r, '(?i)(?:tunnel\s*)?id[:\s]+([a-zA-Z0-9_-]{6,})')
+            if ($m.Success) { $tid = $m.Groups[1].Value }
+            if (-not $tid) { $m2 = [regex]::Match($r, '([a-zA-Z0-9_-]{10,})'); if ($m2.Success) { $tid = $m2.Value } }
+            if ($tid) {
+                Write-StatusDot 'OK' 'OK' "Tunnel created: $tid"
                 $cfg = Get-Config; if (-not $cfg) { $cfg = New-DefaultConfig }
-                $cfg.profiles.$Profile.tunnel_id = $idMatch.Value; Save-Config $cfg
+                $cfg.profiles.$Profile.tunnel_id = $tid; Save-Config $cfg
                 Write-Host "  Saved to profile '$Profile'" -ForegroundColor DarkGray
-                Write-Host "`n  Details:" -ForegroundColor Cyan; devtunnel show $idMatch.Value 2>&1 | ForEach-Object { Write-Host "    $_" }
+                Write-Host "`n  Details:" -ForegroundColor Cyan; devtunnel show $tid 2>&1 | ForEach-Object { Write-Host "    $_" }
+            } else {
+                Write-StatusDot 'WARN' 'WARN' "Tunnel created but ID could not be parsed from output"
+                Write-Host "  Use: devtunnel list to find the new tunnel ID" -ForegroundColor Yellow
             }
         } else { Write-StatusDot 'ERR' 'ERR' "Creation failed: $r" }
     } catch { Write-StatusDot 'ERR' 'ERR' "Error: $_" }
@@ -1162,7 +1215,18 @@ function Test-AgentGo { param([string]$Name)
 function Compare-AgentVersions {
     param([string]$L, [string]$R)
     if (-not $L -or -not $R) { return 'unknown' }
-    try { $lv = [System.Version]($L -replace '[^0-9.]',''); $rv = [System.Version]($R -replace '[^0-9.]',''); if ($lv -lt $rv) { return 'outdated' }; if ($lv -gt $rv) { return 'newer' }; return 'current' } catch { return 'unknown' }
+    # Extract the numeric segments (handle 1, 1.2, 1.2.3.4.5, date versions, pre-release).
+    $la = ([regex]::Matches(($L -replace '^[^0-9]+',''), '\d+') | ForEach-Object { [int]$_.Value })
+    $ra = ([regex]::Matches(($R -replace '^[^0-9]+',''), '\d+') | ForEach-Object { [int]$_.Value })
+    if ($la.Count -eq 0 -or $ra.Count -eq 0) { return 'unknown' }
+    $max = [Math]::Max($la.Count, $ra.Count)
+    for ($i = 0; $i -lt $max; $i++) {
+        $lv = if ($i -lt $la.Count) { $la[$i] } else { 0 }
+        $rv = if ($i -lt $ra.Count) { $ra[$i] } else { 0 }
+        if ($lv -lt $rv) { return 'outdated' }
+        if ($lv -gt $rv) { return 'newer' }
+    }
+    return 'current'
 }
 
 # ---- Enhanced Detection Wrapper ----
@@ -1171,8 +1235,8 @@ function Get-EnhancedDetection {
     $det = Get-AgentDetection -Agent $Agent -DeepScan:$DeepScan
     if (-not $det.Installed) {
         $id = $Agent.id; $pkgName = $id
-        if ($Agent.distribution.npx) { $pkgName = ($Agent.distribution.npx.package -split '@')[0] }
-        elseif ($Agent.distribution.uvx) { $pkgName = ($Agent.distribution.uvx.package -split '==')[0] }
+    if ($Agent.distribution.npx) { $pkgName = Get-NpmPackageName $Agent.distribution.npx.package }
+    elseif ($Agent.distribution.uvx) { $pkgName = Get-UvxPackageName $Agent.distribution.uvx.package }
         $methods = @({Test-AgentPip -Id $id -Pkg $pkgName},{Test-AgentUvx -Id $id -Pkg $pkgName},{Test-AgentWinget -Id $id},{Test-AgentChoco -Id $id},{Test-AgentScoop -Id $id},{Test-AgentDotnet -Id $id},{Test-AgentGo -Name $Agent.name})
         foreach ($m in $methods) { $r = & $m; if ($r -and $r.Installed) { $det.Installed=$true; $det.InstallMethod=$r.Method; $det.InstallDetail=$r.Detail; if ($r.Version) { $det.InstalledVersion=$r.Version }; break } }
     }
@@ -1189,8 +1253,8 @@ function Get-UpdateCommand {
     $module = $id
 
     # Extract package name from registry distribution
-    if ($Agent.distribution.npx) { $pkg = ($Agent.distribution.npx.package -split '@')[0] }
-    elseif ($Agent.distribution.uvx) { $pkg = ($Agent.distribution.uvx.package -split '==')[0] }
+    if ($Agent.distribution.npx) { $pkg = Get-NpmPackageName $Agent.distribution.npx.package }
+    elseif ($Agent.distribution.uvx) { $pkg = Get-UvxPackageName $Agent.distribution.uvx.package }
 
     # Extract binary paths for re-download
     $binaryCmd = $null
@@ -1206,8 +1270,7 @@ function Get-UpdateCommand {
 
     switch ($InstallMethod) {
         'npm' {
-            $nameParts = $Agent.distribution.npx.package -split '@'
-            $npmPkg = $nameParts[0]
+            $npmPkg = Get-NpmPackageName $Agent.distribution.npx.package
             return @{ Cmd = "npm install -g $npmPkg@latest 2>&1"; Label = "npm: $npmPkg" }
         }
         'cargo' {
@@ -1238,22 +1301,24 @@ function Get-UpdateCommand {
         'KnownPath' {
             # Try to infer update method from registry
             if ($Agent.distribution.npx) {
-                $nameParts = $Agent.distribution.npx.package -split '@'
-                $npmPkg = $nameParts[0]
+                $npmPkg = Get-NpmPackageName $Agent.distribution.npx.package
                 return @{ Cmd = "npm install -g $npmPkg@latest 2>&1"; Label = "npm: $npmPkg" }
             }
             elseif ($Agent.distribution.uvx) {
                 return @{ Cmd = "uv tool install --upgrade $pkg 2>&1"; Label = "uvx: $pkg" }
             }
             elseif ($binaryCmd) {
-                # Re-download binary to known path
+                # Re-download binary to known path (escape single quotes in paths)
                 $destName = ($binaryCmd -replace '^\\.\\', '') -split '[/\\]' | Select-Object -Last 1
                 $destDir = Split-Path $InstallDetail -Parent
                 $tmpFile = Join-Path $env:TEMP "update-${id}-$([System.IO.Path]::GetRandomFileName()).exe"
+                $tmpEsc = $tmpFile -replace "'","''"
+                $destEsc = "$destDir\$destName" -replace "'","''"
+                $uriEsc = $uri -replace "'","''"
                 return @{ Cmd = @"
-`$tmp = '$tmpFile'
-Invoke-WebRequest -Uri '$uri' -OutFile `$tmp -UseBasicParsing
-Move-Item `$tmp '$destDir\$destName' -Force
+`$tmp = '$tmpEsc'
+Invoke-WebRequest -Uri '$uriEsc' -OutFile `$tmp -UseBasicParsing -TimeoutSec 60
+Move-Item `$tmp '$destEsc' -Force
 "@; Label = "binary: $destName"; IsScript = $true }
             }
             return @{ Cmd = "winget upgrade $id --accept-package-agreements --accept-source-agreements 2>&1"; Label = "winget: $id"; Fallback = $true }
@@ -1261,8 +1326,7 @@ Move-Item `$tmp '$destDir\$destName' -Force
         'PATH' {
             # Maybe the tool has a --version to verify but we need npm/cargo/etc.
             if ($Agent.distribution.npx) {
-                $nameParts = $Agent.distribution.npx.package -split '@'
-                $npmPkg = $nameParts[0]
+                $npmPkg = Get-NpmPackageName $Agent.distribution.npx.package
                 return @{ Cmd = "npm install -g $npmPkg@latest 2>&1"; Label = "npm: $npmPkg" }
             }
             elseif ($Agent.distribution.uvx) {
@@ -1273,8 +1337,7 @@ Move-Item `$tmp '$destDir\$destName' -Force
         default {
             # Registry install method or unknown
             if ($Agent.distribution.npx) {
-                $nameParts = $Agent.distribution.npx.package -split '@'
-                $npmPkg = $nameParts[0]
+                $npmPkg = Get-NpmPackageName $Agent.distribution.npx.package
                 return @{ Cmd = "npm install -g $npmPkg@latest 2>&1"; Label = "npm: $npmPkg" }
             }
             return @{ Cmd = $null; Label = "$InstallMethod (manual)" }
@@ -1309,15 +1372,21 @@ function Update-Agent {
     if (-not $Quiet) { Write-Host "  >> $($updCmd.Label)" -ForegroundColor DarkGray }
 
     try {
+        $ok = $false
         if ($updCmd.IsScript) {
-            # Execute multi-line script (binary download)
+            # Execute multi-line script (binary download). Cmdlets don't set
+            # $LASTEXITCODE, so judge success via $?. Reset $LASTEXITCODE first
+            # to avoid a stale value from a previous native command.
+            $global:LASTEXITCODE = 0
             $sb = [ScriptBlock]::Create($updCmd.Cmd)
             & $sb 2>&1 | Out-Null
+            $ok = $?
         } else {
             $r = Invoke-Expression $updCmd.Cmd 2>&1
+            $ok = ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null)
         }
 
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) {
+        if ($ok) {
             # Re-detect to get new version
             Start-Sleep -Seconds 1
             $det2 = Get-EnhancedDetection -Agent $Agent
@@ -1337,8 +1406,7 @@ function Update-Agent {
 
         # Try fallback: npm install if original method was PATH/KnownPath
             if ($updCmd.Fallback -and $Agent.distribution.npx) {
-                $nameParts = $Agent.distribution.npx.package -split '@'
-                $npmPkg = $nameParts[0]
+                $npmPkg = Get-NpmPackageName $Agent.distribution.npx.package
                 if (-not $Quiet) { Write-Host "    Falling back to: npm install -g $npmPkg@latest" -ForegroundColor Yellow }
                 try {
                     $r2 = npm install -g $npmPkg@latest 2>&1
@@ -1493,7 +1561,7 @@ function Action-InstallAgent {
     $methods = @()
     if ($agent.distribution.npx) {
         $pkg = $agent.distribution.npx.package
-        $npmPkg = ($pkg -split '@')[0]
+        $npmPkg = Get-NpmPackageName $pkg
         $methods += @{ Method='npx'; Cmd="npm install -g $npmPkg@latest 2>&1"; Label="npm install -g $npmPkg@latest"; Req='npm'; Priority=1 }
     }
     if ($agent.distribution.binary) {
@@ -1508,7 +1576,7 @@ function Action-InstallAgent {
         }
     }
     if ($agent.distribution.uvx) {
-        $pkg = ($agent.distribution.uvx.package -split '==')[0]
+        $pkg = Get-UvxPackageName $agent.distribution.uvx.package
         $methods += @{ Method='uvx'; Cmd="uv tool install $pkg 2>&1"; Label="uv tool install $pkg"; Req='uv'; Priority=3 }
     }
     if ($agent.distribution.cargo) {
@@ -1656,8 +1724,8 @@ function Action-UpdateSelf {
 function Get-UninstallCommand {
     param([object]$Agent, [string]$InstallMethod, [string]$InstallDetail)
     $id = $Agent.id; $pkg = $id
-    if ($Agent.distribution.npx) { $pkg = ($Agent.distribution.npx.package -split '@')[0] }
-    elseif ($Agent.distribution.uvx) { $pkg = ($Agent.distribution.uvx.package -split '==')[0] }
+    if ($Agent.distribution.npx) { $pkg = Get-NpmPackageName $Agent.distribution.npx.package }
+    elseif ($Agent.distribution.uvx) { $pkg = Get-UvxPackageName $Agent.distribution.uvx.package }
     switch ($InstallMethod) {
         'npm'        { return @{ Cmd = "npm uninstall -g $pkg 2>&1"; Label = "npm uninstall -g $pkg" } }
         'pip'        { return @{ Cmd = "pip uninstall -y $pkg 2>&1"; Label = "pip uninstall -y $pkg" } }
@@ -1667,7 +1735,7 @@ function Get-UninstallCommand {
         'choco'      { return @{ Cmd = "choco uninstall $id -y 2>&1"; Label = "choco uninstall $id" } }
         'scoop'      { return @{ Cmd = "scoop uninstall $id 2>&1"; Label = "scoop uninstall $id" } }
         'dotnet'     { return @{ Cmd = "dotnet tool uninstall -g $pkg 2>&1"; Label = "dotnet tool uninstall -g $pkg" } }
-        'KnownPath'  { if ($InstallDetail -and (Test-Path $InstallDetail)) { return @{ Cmd = "Remove-Item -LiteralPath '$InstallDetail' -Recurse -Force"; Label = "remove $InstallDetail"; IsScript = $true } } }
+        'KnownPath'  { if ($InstallDetail -and (Test-Path $InstallDetail)) { $esc = $InstallDetail -replace "'","''"; return @{ Cmd = "Remove-Item -LiteralPath '$esc' -Recurse -Force -ErrorAction Stop"; Label = "remove $InstallDetail"; IsScript = $true } } }
         default      { return $null }
     }
     return $null
@@ -1693,9 +1761,10 @@ function Action-Uninstall {
     Write-Host "  >> $($un.Label)" -ForegroundColor DarkGray
     if (-not (Confirm-Prompt "  Uninstall $($agent.name)?")) { Write-Log "Uninstall cancelled." -Level INFO; return }
     try {
-        if ($un.IsScript) { $sb = [ScriptBlock]::Create($un.Cmd); & $sb 2>&1 | Out-Null }
-        else { Invoke-Expression $un.Cmd 2>&1 | Out-Null }
-        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) { Write-StatusDot 'OK' 'OK' "$($agent.name) uninstalled"; Write-Log "$($agent.name) uninstalled via $($un.Label)" -Level OK }
+        $global:LASTEXITCODE = 0
+        if ($un.IsScript) { $sb = [ScriptBlock]::Create($un.Cmd); & $sb 2>&1 | Out-Null; $ok = $? }
+        else { Invoke-Expression $un.Cmd 2>&1 | Out-Null; $ok = ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) }
+        if ($ok) { Write-StatusDot 'OK' 'OK' "$($agent.name) uninstalled"; Write-Log "$($agent.name) uninstalled via $($un.Label)" -Level OK }
         else { Write-StatusDot 'ERR' 'ERR' "$($agent.name): exit code $LASTEXITCODE" }
     } catch { Write-StatusDot 'ERR' 'ERR' "$($agent.name): $_"; Write-Log "Uninstall error $($agent.name): $_" -Level ERROR }
 }
@@ -1709,9 +1778,10 @@ function Action-Watch {
     while ($true) {
         $savedFormat = $OutputFormat
         $OutputFormat = 'Text'
-        Action-Status
-        $OutputFormat = $savedFormat
-        Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Next refresh in ${Interval}s... (Ctrl+C to stop)" -ForegroundColor DarkGray
+        try {
+            Action-Status
+            Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] Next refresh in ${Interval}s... (Ctrl+C to stop)" -ForegroundColor DarkGray
+        } finally { $OutputFormat = $savedFormat }
         Start-Sleep -Seconds $Interval
         Clear-Host
     }
@@ -1748,7 +1818,7 @@ function Invoke-InteractiveAction {
     param([string]$ActionName, [hashtable]$Params = @{})
     $savedAction = $Action; $savedBridge = $Bridge; $savedAgentId = $AgentId
     $savedPort = $Port; $savedTunnelId = $TunnelId; $savedAnonymous = $Anonymous; $savedDetailed = $Detailed; $savedDisable = $Disable
-    $savedLogLines = $LogLines
+    $savedLogLines = $LogLines; $savedUpdateRegistry = $UpdateRegistry; $savedInterval = $Interval
     $script:Action = $ActionName
     if ($Params.ContainsKey('Bridge')) { $script:Bridge = $Params.Bridge }
     if ($Params.ContainsKey('AgentId')) { $script:AgentId = $Params.AgentId }
@@ -1758,6 +1828,8 @@ function Invoke-InteractiveAction {
     if ($Params.ContainsKey('Detailed')) { $script:Detailed = $Params.Detailed }
     if ($Params.ContainsKey('Disable')) { $script:Disable = $Params.Disable }
     if ($Params.ContainsKey('LogLines')) { $script:LogLines = $Params.LogLines }
+    if ($Params.ContainsKey('UpdateRegistry')) { $script:UpdateRegistry = $Params.UpdateRegistry }
+    if ($Params.ContainsKey('Interval')) { $script:Interval = $Params.Interval }
     switch ($ActionName) {
         'Scan' { Action-Scan }; 'AgentInfo' { Action-AgentInfo }; 'Registry' { Action-Registry }
         'InstallAgent' { Action-InstallAgent }; 'Update' { Action-Update }; 'Uninstall' { Action-Uninstall }
@@ -1774,6 +1846,7 @@ function Invoke-InteractiveAction {
     $script:Action = $savedAction; $script:Bridge = $savedBridge; $script:AgentId = $savedAgentId
     $script:Port = $savedPort; $script:TunnelId = $savedTunnelId; $script:Anonymous = $savedAnonymous
     $script:Detailed = $savedDetailed; $script:Disable = $savedDisable; $script:LogLines = $savedLogLines
+    $script:UpdateRegistry = $savedUpdateRegistry; $script:Interval = $savedInterval
 }
 
 function Get-AgentChoice {
@@ -1784,7 +1857,7 @@ function Get-AgentChoice {
     foreach ($a in $reg.agents) {
         Write-Host "  [$i] $($a.id) - $($a.name) v$($a.version)" -ForegroundColor White
         $list += $a.id; $i++
-        if ($i -gt 50) { Write-Host "  ... and $($reg.agents.Count - 50) more"; break }
+        if ($i -gt 50 -and $reg.agents.Count -gt 50) { Write-Host "  ... and $($reg.agents.Count - 50) more"; break }
     }
     Write-Host "  [0/b] Back"
     $choice = Read-Host "`n  Select agent [# or ID]"
