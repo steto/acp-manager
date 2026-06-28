@@ -1,16 +1,16 @@
 ﻿<#
 .SYNOPSIS
-    ACP Manager v4.2 - Bridge Management + Agent Detection Engine
+    ACP Manager - Bridge Management + Agent Detection Engine
 .DESCRIPTION
     Complete ACP bridge management + agent detection + installation.
-    
+
     BRIDGE: Init, Install, Start, Stop, Restart, Status, Tunnel, Autostart
-    DETECTION: Scan, AgentInfo, Registry, InstallAgent (37 agents from official ACP registry)
-    SYSTEM: Config, Diag, Logs, LogClear, Mobile, Interactive, Help
+    DETECTION: Scan, AgentInfo, Registry, InstallAgent, Uninstall, Update (all agents from the official ACP registry)
+    SYSTEM: Config, Diag, Logs, LogClear, Mobile, Version, UpdateSelf, Watch, Interactive, Help
 .PARAMETER Action
-    Action: Init, Install, InstallAgent, Start, Stop, Restart, Status, Scan, AgentInfo,
-            Registry, Tunnel, TunnelCreate, TunnelList, TunnelInfo, TunnelDelete,
-            Update, Logs, LogClear, Config, Diag, Autostart, Mobile, Watch, Interactive, Help
+    Action: Init, Install, Uninstall, InstallAgent, Start, Stop, Restart, Status, Scan, AgentInfo,
+            Registry, Version, Tunnel, TunnelCreate, TunnelList, TunnelInfo, TunnelDelete,
+            Update, UpdateSelf, Logs, LogClear, Config, Diag, Autostart, Mobile, Watch, Interactive, Help
 .PARAMETER Bridge
     Bridge: opencode, kilocode, cursor, all
 .PARAMETER AgentId
@@ -23,6 +23,8 @@
     Text | Json
 .PARAMETER LogLines
     Log lines (default: 50)
+.PARAMETER Interval
+    Watch refresh interval in seconds (default: 10)
 .PARAMETER Profile
     Config profile
 .PARAMETER Anonymous
@@ -33,10 +35,12 @@
     Force registry update (switch)
 .PARAMETER Detailed
     Detailed output (switch)
+.PARAMETER Yes
+    Skip confirmation prompts (switch) - for automation / CI
 #>
 
 param(
-    [ValidateSet('Init','Install','Start','Stop','Restart','Update','Status','Scan','AgentInfo','Registry','InstallAgent','Watch',
+    [ValidateSet('Init','Install','Uninstall','InstallAgent','Start','Stop','Restart','Update','UpdateSelf','Status','Scan','AgentInfo','Registry','Version','Watch',
                  'Tunnel','TunnelCreate','TunnelList','TunnelInfo','TunnelDelete',
                  'Logs','LogClear','Config','Diag','Autostart','Mobile','Interactive','Help')]
     [string]$Action = 'Interactive',
@@ -48,11 +52,13 @@ param(
     [ValidateSet('Text','Json')]
     [string]$OutputFormat = 'Text',
     [int]$LogLines = 50,
+    [int]$Interval = 10,
     [string]$Profile = 'default',
     [switch]$Anonymous = $false,
     [switch]$Disable = $false,
     [switch]$UpdateRegistry = $false,
-    [switch]$Detailed = $false
+    [switch]$Detailed = $false,
+    [switch]$Yes = $false
 )
 
 # ============================================================
@@ -94,7 +100,7 @@ function Write-Log {
         'DEBUG' { 'DarkGray' }; default { 'Gray' }
     }
     if ($Level -ne 'DEBUG' -or $Script:LogLevel -eq 'DEBUG') {
-        Write-Host $line -ForegroundColor $color
+        if ($OutputFormat -ne 'Json') { Write-Host $line -ForegroundColor $color }
     }
     if ($Script:LogFile) {
         Add-Content -Path $Script:LogFile -Value $line -ErrorAction SilentlyContinue
@@ -189,6 +195,13 @@ function Test-PortOpen {
         $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
         return [bool]$c
     } catch { return $false }
+}
+
+function Confirm-Prompt {
+    param([string]$Prompt)
+    if ($Yes) { return $true }
+    $r = Read-Host "$Prompt (y/N)"
+    return ($r -eq 'y' -or $r -eq 'Y' -or $r -eq 's' -or $r -eq 'S')
 }
 
 # ============================================================
@@ -394,7 +407,7 @@ function Get-AgentDetection {
         )
         foreach ($rp in $regPaths) {
             $entries = Get-ItemProperty $rp -ErrorAction SilentlyContinue | Where-Object {
-                $_.DisplayName -and (Test-IdMatch -Token $id -Text $_.DisplayName -or Test-IdMatch -Token $name -Text $_.DisplayName)
+                $_.DisplayName -and ((Test-IdMatch -Token $id -Text $_.DisplayName) -or (Test-IdMatch -Token $name -Text $_.DisplayName))
             }
             if ($entries) {
                 $result.Installed = $true; $result.InstallMethod = 'Registry'
@@ -469,18 +482,19 @@ function Action-Init {
     Write-Section "Initial Setup"
     if (Test-Path $Script:ConfigFile) {
         Write-StatusDot 'INFO' 'INFO' "Existing config: $Script:ConfigFile"
-        $r = Read-Host "Overwrite? (y/N)"
-        if ($r -ne 'y' -and $r -ne 's') { Write-Log "Init cancelled." -Level INFO; return }
+        if (-not (Confirm-Prompt "Overwrite?")) { Write-Log "Init cancelled." -Level INFO; return }
     }
     $cfg = New-DefaultConfig
-    Write-Host "`nBridge ports (Enter for default):" -ForegroundColor Yellow
-    foreach ($b in @('opencode','kilocode','cursor')) {
-        $def = $Script:BridgePortsDefault[$b]; $r = Read-Host "  $b [$def]"
-        if ($r -match '^\d+$') { $cfg.profiles.default.ports.$b = [int]$r }
-    }
-    $r = Read-Host "`nEnable auto-restart? (y/N)"; $cfg.profiles.default.auto_restart = ($r -eq 'y' -or $r -eq 's')
-    $r = Read-Host "Mobile mode? (y/N)"; $cfg.profiles.default.mobile_mode = ($r -eq 'y' -or $r -eq 's')
-    $r = Read-Host "Anonymous tunnel default? (y/N)"; $cfg.profiles.default.anonymous_tunnel = ($r -eq 'y' -or $r -eq 's')
+    if (-not $Yes) {
+        Write-Host "`nBridge ports (Enter for default):" -ForegroundColor Yellow
+        foreach ($b in @('opencode','kilocode','cursor')) {
+            $def = $Script:BridgePortsDefault[$b]; $r = Read-Host "  $b [$def]"
+            if ($r -match '^\d+$') { $cfg.profiles.default.ports.$b = [int]$r }
+        }
+        $cfg.profiles.default.auto_restart = (Confirm-Prompt "`nEnable auto-restart?")
+        $cfg.profiles.default.mobile_mode = (Confirm-Prompt "Mobile mode?")
+        $cfg.profiles.default.anonymous_tunnel = (Confirm-Prompt "Anonymous tunnel default?")
+    } else { Write-StatusDot 'INFO' 'INFO' '-Yes set: using default ports and options' }
     Save-Config $cfg; Write-Log "Configuration complete!" -Level OK
 
     Write-Section "Prerequisites Check"
@@ -587,7 +601,6 @@ function Action-Restart {
 # ============================================================
 
 function Action-Status {
-    Write-Section "ACP Bridge Status"
     $bridges = @('opencode','kilocode','cursor'); $rows = @()
     foreach ($b in $bridges) {
         $name = $Script:BridgeNames[$b]; $check = $Script:BridgeCmds[$b].check
@@ -601,6 +614,19 @@ function Action-Status {
             $rows += [PSCustomObject]@{ Bridge=$name; PID='-'; Port=$bp; RAM='-'; Status=$stato; Health='-'; Uptime='-' }
         }
     }
+    if ($OutputFormat -eq 'Json') {
+        $dev = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue
+        $agents = @()
+        $regJ = Get-CachedRegistry
+        if ($regJ) {
+            foreach ($a in $regJ.agents) {
+                $d = Get-EnhancedDetection -Agent $a
+                if ($d.Installed) { $agents += [PSCustomObject]@{ Agent=$d.Name; Status=$d.StatusIcon; Version=$d.InstalledVersion; Method=$d.InstallMethod } }
+            }
+        }
+        return [PSCustomObject]@{ bridges = $rows; devtunnel = $(if ($dev) { @{ Running=$true; PID=$dev.Id } } else { @{ Running=$false } }); agents = $agents } | ConvertTo-Json -Depth 6
+    }
+    Write-Section "ACP Bridge Status"
     Write-Table -Data $rows -Properties @('Bridge','PID','Port','RAM','Status','Health','Uptime') -Headers @('Bridge','PID','Port','RAM','Status','Health','Uptime')
     $t = Get-Process -Name 'devtunnel' -ErrorAction SilentlyContinue
     if ($t) { Write-StatusDot 'RUN' 'RUN' "DevTunnel running (PID:$($t.Id))" }
@@ -628,22 +654,33 @@ function Action-Status {
 # ============================================================
 
 function Action-Scan {
-    Write-Section "ACP Agent Scan - System Detection"
     $reg = Get-CachedRegistry
-    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return }
+    if (-not $reg) { if ($OutputFormat -eq 'Json') { return [PSCustomObject]@{ error = 'Registry not available' } | ConvertTo-Json } else { Write-Section "ACP Agent Scan - System Detection"; Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return } }
 
     $agents = $reg.agents; Write-Log "Scanning $($agents.Count) agents..." -Level INFO
     $results = @()
     $totalTime = Measure-Command {
         $count = 0
         foreach ($agent in $agents) {
-            $count++; Write-ScanProgress -Current $count -Total $agents.Count -AgentName $agent.name
+            $count++
+            if ($OutputFormat -ne 'Json') { Write-ScanProgress -Current $count -Total $agents.Count -AgentName $agent.name }
             $det = Get-EnhancedDetection -Agent $agent -DeepScan:$Detailed
             $results += [PSCustomObject]$det
         }
     }
-    Clear-ScanProgress
+    if ($OutputFormat -ne 'Json') { Clear-ScanProgress }
     $installed = $results | Where-Object { $_.Installed }; $running = $results | Where-Object { $_.Running }
+
+    if ($OutputFormat -eq 'Json') {
+        return [PSCustomObject]@{
+            registryAgents = $agents.Count
+            installed = @($installed | ForEach-Object { [PSCustomObject]@{ Name=$_.Name; Version=$_.Version; InstalledVersion=$_.InstalledVersion; VersionStatus=$_.VersionStatus; Method=$_.InstallMethod; Running=$_.Running } })
+            results = $results
+            timeSeconds = [Math]::Round($totalTime.TotalSeconds,1)
+        } | ConvertTo-Json -Depth 6
+    }
+
+    Write-Section "ACP Agent Scan - System Detection"
     Write-Host "`n  Results:" -ForegroundColor Cyan
     Write-Host "    Registry agents: $($agents.Count)" -ForegroundColor White
     Write-Host "    Installed: $($installed.Count)" -ForegroundColor Green
@@ -855,7 +892,7 @@ function Action-Autostart {
     Write-Section "Windows Auto-Start"; Write-Host "  Task: $taskName" -ForegroundColor DarkGray; Write-Host "  Script: $scriptPath`n" -ForegroundColor DarkGray
     $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($Disable) { if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Auto-start removed' } else { Write-StatusDot 'INFO' 'INFO' 'No auto-start configured' }; return }
-    if ($existing) { Write-StatusDot 'INFO' 'INFO' 'Auto-start already configured'; $r = Read-Host "Remove it? (y/N)"; if ($r -eq 'y' -or $r -eq 's') { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Removed' } else { Write-StatusDot 'INFO' 'INFO' 'Kept' }; return }
+    if ($existing) { Write-StatusDot 'INFO' 'INFO' 'Auto-start already configured'; if (Confirm-Prompt "Remove it?") { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-StatusDot 'OK' 'OK' 'Removed' } else { Write-StatusDot 'INFO' 'INFO' 'Kept' }; return }
     $autostartBridge = if ($Bridge -eq 'all') { 'opencode' } else { $Bridge }
     try {
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Action Start -Bridge $autostartBridge"
@@ -903,10 +940,11 @@ function Show-Help {
 $(Format-HelpAction 'Interactive'  'Launch interactive menu (default when no args)')
 
   DETECTION:
-$(Format-HelpAction 'Scan'          'Scan 37+ ACP agents (installed, running, working)')
+$(Format-HelpAction 'Scan'          'Scan all ACP agents (installed, running, working)')
 $(Format-HelpAction 'AgentInfo'     'Detailed info on an agent (-AgentId)')
 $(Format-HelpAction 'Registry'      'Show/update official ACP registry')
 $(Format-HelpAction 'InstallAgent'  'Install an ACP agent from registry (-AgentId)')
+$(Format-HelpAction 'Uninstall'     'Uninstall an ACP agent (-AgentId)')
 $(Format-HelpAction 'Update'        'Update ACP agents (-AgentId name | all)')
 
   BRIDGE MANAGEMENT:
@@ -931,13 +969,17 @@ $(Format-HelpAction 'Logs'        'Show logs (-LogLines N)')
 $(Format-HelpAction 'LogClear'    'Clear logs')
 $(Format-HelpAction 'Autostart'   'Windows auto-start (-Disable to remove)')
 $(Format-HelpAction 'Mobile'      'Mobile integration guide')
+$(Format-HelpAction 'Watch'       'Live monitoring (-Interval seconds)')
+$(Format-HelpAction 'Version'     'Show ACP Manager version')
+$(Format-HelpAction 'UpdateSelf'  'Update this script to the latest release')
 $(Format-HelpAction 'Help'        'This help screen')
 
   PARAMETERS:
-    -Action        Init | Install | InstallAgent | Start | Stop | Restart | Update |
-                   Status | Scan | AgentInfo | Registry | Interactive | Help |
+    -Action        Init | Install | Uninstall | InstallAgent | Start | Stop | Restart |
+                   Update | UpdateSelf | Status | Scan | AgentInfo | Registry | Version |
                    Tunnel | TunnelCreate | TunnelList | TunnelInfo | TunnelDelete |
-                   Logs | LogClear | Config | Diag | Autostart | Mobile | Watch
+                   Logs | LogClear | Config | Diag | Autostart | Mobile | Watch |
+                   Interactive | Help
     -AgentId       Registry agent ID (e.g. gemini, claude-acp, devin)
     -Bridge        opencode | kilocode | cursor | all
     -Port          Custom port
@@ -945,10 +987,12 @@ $(Format-HelpAction 'Help'        'This help screen')
     -OutputFormat  Text | Json
     -Profile       Config profile
     -LogLines      Log lines (default: 50)
+    -Interval      Watch refresh seconds (default: 10)
     -Anonymous     Anonymous tunnel (switch)
     -Detailed      Detailed output (switch)
     -UpdateRegistry Force registry update (switch)
     -Disable       Disable auto-start (switch)
+    -Yes           Skip confirmation prompts (for automation / CI)
 
   EXAMPLES:
     .\acp-manager.ps1                        # Interactive mode
@@ -957,11 +1001,16 @@ $(Format-HelpAction 'Help'        'This help screen')
     .\acp-manager.ps1 -Action Scan -OutputFormat Json
     .\acp-manager.ps1 -Action AgentInfo -AgentId gemini
     .\acp-manager.ps1 -Action InstallAgent -AgentId gemini
+    .\acp-manager.ps1 -Action InstallAgent -AgentId gemini -Yes
+    .\acp-manager.ps1 -Action Uninstall -AgentId gemini
     .\acp-manager.ps1 -Action Registry
     .\acp-manager.ps1 -Action Update -AgentId all
+    .\acp-manager.ps1 -Action Update -AgentId all -Yes
     .\acp-manager.ps1 -Action Install -Bridge all
     .\acp-manager.ps1 -Action Tunnel -Bridge kilocode -Anonymous
+    .\acp-manager.ps1 -Action Watch -Interval 5
     .\acp-manager.ps1 -Action Status
+    .\acp-manager.ps1 -Action Version
     .\acp-manager.ps1 -Action Diag
     .\acp-manager.ps1 -Action Autostart -Bridge opencode
 
@@ -1359,8 +1408,7 @@ function Action-Update {
     # Confirm unless -AgentId specified a single agent
     if ($installed.Count -gt 1) {
         Write-Host "`n"
-        $confirm = Read-Host "Update all $($installed.Count) agents? (y/N)"
-        if ($confirm -ne 'y' -and $confirm -ne 'Y' -and $confirm -ne 's' -and $confirm -ne 'S') { Write-Log "Update cancelled." -Level INFO; return }
+        if (-not (Confirm-Prompt "Update all $($installed.Count) agents?")) { Write-Log "Update cancelled." -Level INFO; return }
     }
 
     Write-Host "`n"
@@ -1427,8 +1475,7 @@ function Action-InstallAgent {
     if ($det.Installed) {
         $v = if ($det.InstalledVersion) { $det.InstalledVersion } else { '?' }
         Write-StatusDot 'OK' 'OK' "$name already installed ($v) via $($det.InstallMethod)"
-        $r = Read-Host "  Reinstall/update it? (y/N)"
-        if ($r -ne 'y' -and $r -ne 'Y' -and $r -ne 's' -and $r -ne 'S') { Write-Log "Install cancelled." -Level INFO; return }
+        if (-not (Confirm-Prompt "  Reinstall/update it?")) { Write-Log "Install cancelled." -Level INFO; return }
         Write-Host ""
     } else {
         Write-StatusDot 'INFO' 'INFO' "$name ($id) v$ver - not installed"
@@ -1488,8 +1535,7 @@ function Action-InstallAgent {
     # Confirm
     Write-Host "`n"
     Write-Host "  Chosen method: $($chosen.Label)" -ForegroundColor Cyan
-    $r = Read-Host "  Install $name? (y/N)"
-    if ($r -ne 'y' -and $r -ne 'Y' -and $r -ne 's' -and $r -ne 'S') { Write-Log "Install cancelled." -Level INFO; return }
+    if (-not (Confirm-Prompt "  Install $name?")) { Write-Log "Install cancelled." -Level INFO; return }
     Write-Host ""
 
     # Execute installation
@@ -1548,9 +1594,107 @@ function Action-InstallAgent {
     }
 }
 
+# ============================================================
+# ACTION: VERSION
+# ============================================================
+
+function Action-Version {
+    $info = [PSCustomObject]@{
+        name = 'ACP Manager'
+        version = $Script:Version
+        config = $Script:ConfigFile
+        registryCache = $Script:RegistryCacheFile
+        registryCached = (Test-Path $Script:RegistryCacheFile)
+        powershell = "$($PSVersionTable.PSVersion)"
+        os = (Get-CimInstance Win32_OperatingSystem).Caption
+    }
+    if ($OutputFormat -eq 'Json') { return $info | ConvertTo-Json -Compress }
+    Write-Host "ACP Manager v$($Script:Version)" -ForegroundColor Cyan
+    Write-Host "  Config:         $($info.config)" -ForegroundColor DarkGray
+    Write-Host "  Registry cache: $($info.registryCache) ($(if ($info.registryCached) { 'present' } else { 'none' }))" -ForegroundColor DarkGray
+    Write-Host "  PowerShell:     $($info.powershell) on $($info.os)" -ForegroundColor DarkGray
+}
+
+# ============================================================
+# ACTION: UPDATESelf
+# ============================================================
+
+function Action-UpdateSelf {
+    $scriptPath = (Get-Item $PSCommandPath).FullName
+    $updateUrl = 'https://raw.githubusercontent.com/steto/acp-manager/main/acp-manager.ps1'
+    Write-Section "Self-Update"
+    Write-Host "  Current: v$($Script:Version)" -ForegroundColor DarkGray
+    Write-Host "  Source:  $updateUrl" -ForegroundColor DarkGray
+    if (-not (Confirm-Prompt "Download latest version and overwrite this script?")) { Write-Log "Self-update cancelled." -Level INFO; return }
+    $tmp = Join-Path $env:TEMP "acp-manager-$([System.IO.Path]::GetRandomFileName()).ps1"
+    $backup = "$scriptPath.bak"
+    try {
+        Invoke-WebRequest -Uri $updateUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 30
+        # Sanity check: downloaded file must parse as PowerShell
+        $pErrs = New-Object System.Collections.ObjectModel.Collection[Management.Automation.Language.ParseError]
+        $null = [System.Management.Automation.Language.Parser]::ParseFile($tmp, [ref]$null, [ref]$pErrs)
+        if ($pErrs.Count -gt 0) { Write-StatusDot 'ERR' 'ERR' "Downloaded file has $($pErrs.Count) parse errors. Aborting (no changes made)."; return }
+        Copy-Item $scriptPath $backup -Force
+        Move-Item $tmp $scriptPath -Force
+        Write-StatusDot 'OK' 'OK' "Updated. Backup saved: $backup"
+        Write-Host "  Restart your terminal to load the new version." -ForegroundColor Cyan
+    } catch { Write-StatusDot 'ERR' 'ERR' "Self-update failed: $_"; Write-Log "Self-update failed: $_" -Level ERROR }
+}
+
+# ============================================================
+# ACTION: UNINSTALL (agent from registry)
+# ============================================================
+
+function Get-UninstallCommand {
+    param([object]$Agent, [string]$InstallMethod, [string]$InstallDetail)
+    $id = $Agent.id; $pkg = $id
+    if ($Agent.distribution.npx) { $pkg = ($Agent.distribution.npx.package -split '@')[0] }
+    elseif ($Agent.distribution.uvx) { $pkg = ($Agent.distribution.uvx.package -split '==')[0] }
+    switch ($InstallMethod) {
+        'npm'        { return @{ Cmd = "npm uninstall -g $pkg 2>&1"; Label = "npm uninstall -g $pkg" } }
+        'pip'        { return @{ Cmd = "pip uninstall -y $pkg 2>&1"; Label = "pip uninstall -y $pkg" } }
+        'uvx'        { return @{ Cmd = "uv tool uninstall $pkg 2>&1"; Label = "uv tool uninstall $pkg" } }
+        'cargo'      { return @{ Cmd = "cargo uninstall $id 2>&1"; Label = "cargo uninstall $id" } }
+        'winget'     { return @{ Cmd = "winget uninstall $id --accept-source-agreements 2>&1"; Label = "winget uninstall $id" } }
+        'choco'      { return @{ Cmd = "choco uninstall $id -y 2>&1"; Label = "choco uninstall $id" } }
+        'scoop'      { return @{ Cmd = "scoop uninstall $id 2>&1"; Label = "scoop uninstall $id" } }
+        'dotnet'     { return @{ Cmd = "dotnet tool uninstall -g $pkg 2>&1"; Label = "dotnet tool uninstall -g $pkg" } }
+        'KnownPath'  { if ($InstallDetail -and (Test-Path $InstallDetail)) { return @{ Cmd = "Remove-Item -LiteralPath '$InstallDetail' -Recurse -Force"; Label = "remove $InstallDetail"; IsScript = $true } } }
+        default      { return $null }
+    }
+    return $null
+}
+
+function Action-Uninstall {
+    Write-Section "Uninstall ACP Agent"
+    $reg = Get-CachedRegistry
+    if (-not $reg) { Write-StatusDot 'ERR' 'ERR' 'Registry not available'; return }
+    if (-not $AgentId) {
+        Write-Host "  Use -AgentId to specify an agent. Installed:`n" -ForegroundColor Yellow
+        foreach ($a in $reg.agents) { $d = Get-EnhancedDetection -Agent $a; if ($d.Installed) { Write-Host "    $($a.id) - $($a.name) ($($d.InstallMethod))" -ForegroundColor White } }
+        Write-Host "`n  Example: .\acp-manager.ps1 -Action Uninstall -AgentId gemini`n" -ForegroundColor Cyan
+        return
+    }
+    $agent = $reg.agents | Where-Object { $_.id -eq $AgentId } | Select-Object -First 1
+    if (-not $agent) { Write-StatusDot 'ERR' 'ERR' "Agent '$AgentId' not found"; return }
+    $det = Get-EnhancedDetection -Agent $agent
+    if (-not $det.Installed) { Write-StatusDot 'STOP' 'STOP' "$($agent.name) not installed"; return }
+    $un = Get-UninstallCommand -Agent $agent -InstallMethod $det.InstallMethod -InstallDetail $det.InstallDetail
+    if (-not $un -or -not $un.Cmd) { Write-StatusDot 'WARN' 'WARN' "Auto-uninstall not supported for method '$($det.InstallMethod)'"; if ($agent.website) { Write-Host "    Visit: $($agent.website)" -ForegroundColor Blue }; return }
+    Write-Host "  $($agent.name) via $($det.InstallMethod)" -ForegroundColor White
+    Write-Host "  >> $($un.Label)" -ForegroundColor DarkGray
+    if (-not (Confirm-Prompt "  Uninstall $($agent.name)?")) { Write-Log "Uninstall cancelled." -Level INFO; return }
+    try {
+        if ($un.IsScript) { $sb = [ScriptBlock]::Create($un.Cmd); & $sb 2>&1 | Out-Null }
+        else { Invoke-Expression $un.Cmd 2>&1 | Out-Null }
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) { Write-StatusDot 'OK' 'OK' "$($agent.name) uninstalled"; Write-Log "$($agent.name) uninstalled via $($un.Label)" -Level OK }
+        else { Write-StatusDot 'ERR' 'ERR' "$($agent.name): exit code $LASTEXITCODE" }
+    } catch { Write-StatusDot 'ERR' 'ERR' "$($agent.name): $_"; Write-Log "Uninstall error $($agent.name): $_" -Level ERROR }
+}
+
 # ---- WATCH MODE ----
 function Action-Watch {
-    param([int]$Interval = 10)
+    if ($Interval -lt 1) { $Interval = 10 }
     Write-Section "Watch Mode - Ctrl+C to exit"
     Write-Host "  Refreshing every ${Interval}s" -ForegroundColor DarkGray
     Write-Host "`n"
@@ -1608,7 +1752,7 @@ function Invoke-InteractiveAction {
     if ($Params.ContainsKey('LogLines')) { $script:LogLines = $Params.LogLines }
     switch ($ActionName) {
         'Scan' { Action-Scan }; 'AgentInfo' { Action-AgentInfo }; 'Registry' { Action-Registry }
-        'InstallAgent' { Action-InstallAgent }; 'Update' { Action-Update }
+        'InstallAgent' { Action-InstallAgent }; 'Update' { Action-Update }; 'Uninstall' { Action-Uninstall }
         'Install' { Action-Install }; 'Start' { Action-Start }; 'Stop' { Action-Stop }
         'Restart' { Action-Restart }; 'Status' { Action-Status }
         'Tunnel' { Action-Tunnel }; 'TunnelCreate' { Action-TunnelCreate }
@@ -1617,6 +1761,7 @@ function Invoke-InteractiveAction {
         'Config' { Action-Config }; 'Diag' { Action-Diag }; 'Logs' { Action-Logs }
         'LogClear' { Action-LogClear }; 'Autostart' { Action-Autostart }
         'Mobile' { Action-Mobile }; 'Watch' { Action-Watch }
+        'Version' { Action-Version }; 'UpdateSelf' { Action-UpdateSelf }
     }
     $script:Action = $savedAction; $script:Bridge = $savedBridge; $script:AgentId = $savedAgentId
     $script:Port = $savedPort; $script:TunnelId = $savedTunnelId; $script:Anonymous = $savedAnonymous
@@ -1706,14 +1851,16 @@ function Show-InstallMenu {
         Write-Host "  [3] Update ALL installed agents"
         Write-Host "  [4] Update a specific agent"
         Write-Host "  [5] Install bridges (opencode/kilocode/cursor)"
+        Write-Host "  [6] Uninstall an agent"
         Write-Host "  [0/b] Back to Main Menu"
-        $c = Read-Host "`n  Select [0-5]"
+        $c = Read-Host "`n  Select [0-6]"
         switch ($c) {
             '1' { Invoke-InteractiveAction -ActionName 'Registry'; Press-Enter }
             '2' { $aid = Get-AgentChoice; if ($aid) { Invoke-InteractiveAction -ActionName 'InstallAgent' -Params @{AgentId=$aid}; Press-Enter } }
             '3' { Invoke-InteractiveAction -ActionName 'Update' -Params @{AgentId='all'}; Press-Enter }
             '4' { $aid = Get-AgentChoice; if ($aid) { Invoke-InteractiveAction -ActionName 'Update' -Params @{AgentId=$aid}; Press-Enter } }
             '5' { $b = Get-BridgeChoice; if ($b) { Invoke-InteractiveAction -ActionName 'Install' -Params @{Bridge=$b}; Press-Enter } }
+            '6' { $aid = Get-AgentChoice; if ($aid) { Invoke-InteractiveAction -ActionName 'Uninstall' -Params @{AgentId=$aid}; Press-Enter } }
             '0' { return }
             'b' { return }
             'B' { return }
@@ -1798,8 +1945,10 @@ function Show-SystemMenu {
         Write-Host "  [6] Remove Auto-start"
         Write-Host "  [7] Mobile Integration Guide"
         Write-Host "  [8] Watch Mode (live monitoring)"
+        Write-Host "  [9] ACP Manager Version"
+        Write-Host "  [u] Update ACP Manager (self-update)"
         Write-Host "  [0/b] Back to Main Menu"
-        $c = Read-Host "`n  Select [0-8]"
+        $c = Read-Host "`n  Select [0-9/u]"
         switch ($c) {
             '1' { Invoke-InteractiveAction -ActionName 'Config'; Press-Enter }
             '2' { Invoke-InteractiveAction -ActionName 'Diag'; Press-Enter }
@@ -1814,6 +1963,9 @@ function Show-SystemMenu {
             '6' { Invoke-InteractiveAction -ActionName 'Autostart' -Params @{Disable=$true}; Press-Enter }
             '7' { Invoke-InteractiveAction -ActionName 'Mobile'; Press-Enter }
             '8' { Invoke-InteractiveAction -ActionName 'Watch'; Press-Enter }
+            '9' { Invoke-InteractiveAction -ActionName 'Version'; Press-Enter }
+            'u' { Invoke-InteractiveAction -ActionName 'UpdateSelf'; Press-Enter }
+            'U' { Invoke-InteractiveAction -ActionName 'UpdateSelf'; Press-Enter }
             '0' { return }
             'b' { return }
             'B' { return }
@@ -1859,6 +2011,7 @@ $null = Get-Config
 switch ($Action) {
     'Init'          { Action-Init }
     'Install'       { Action-Install }
+    'Uninstall'     { Action-Uninstall }
     'Start'         { Action-Start }
     'Stop'          { Action-Stop }
     'Restart'       { Action-Restart }
@@ -1866,6 +2019,7 @@ switch ($Action) {
     'Scan'          { Action-Scan }
     'AgentInfo'     { Action-AgentInfo }
     'Registry'      { Action-Registry }
+    'Version'       { Action-Version }
     'Tunnel'        { Action-Tunnel }
     'TunnelCreate'  { Action-TunnelCreate }
     'TunnelList'    { Action-TunnelList }
@@ -1879,6 +2033,7 @@ switch ($Action) {
     'Mobile'        { Action-Mobile }
     'InstallAgent'  { Action-InstallAgent }
     'Update'        { Action-Update }
+    'UpdateSelf'    { Action-UpdateSelf }
     'Watch'         { Action-Watch }
     'Interactive'   { Action-Interactive }
     'Help'          { Show-Help }
