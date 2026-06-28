@@ -269,6 +269,10 @@ function Update-RegistryCache {
             New-Item -ItemType Directory -Path $Script:ConfigDir -Force | Out-Null
         }
         Move-Item $tmpFile $Script:RegistryCacheFile -Force
+        # Windows preserves the destination's CreationTime on overwrite, so
+        # reset both timestamps to avoid a frozen CreationTime.
+        (Get-Item $Script:RegistryCacheFile).CreationTime = (Get-Date)
+        (Get-Item $Script:RegistryCacheFile).LastWriteTime = (Get-Date)
         $reg = Get-Content $Script:RegistryCacheFile -Raw | ConvertFrom-Json
         Write-Log "Registry updated: $($reg.agents.Count) agents" -Level OK
         return $reg
@@ -286,7 +290,11 @@ function Update-RegistryCache {
 function Get-CachedRegistry {
     if ($UpdateRegistry) { return Update-RegistryCache }
     if (Test-Path $Script:RegistryCacheFile) {
-        $age = [int]((Get-Date) - (Get-Item $Script:RegistryCacheFile).CreationTime).TotalHours
+        # NOTE: use LastWriteTime, not CreationTime. Windows preserves the
+        # destination's original CreationTime when Move-Item -Force overwrites
+        # an existing file, so CreationTime would never refresh and the cache
+        # would be re-downloaded on every run.
+        $age = [int]((Get-Date) - (Get-Item $Script:RegistryCacheFile).LastWriteTime).TotalHours
         if ($age -gt 24) { Write-Log "Cache expired ($age h). Updating..." -Level INFO; return Update-RegistryCache }
         try { return Get-Content $Script:RegistryCacheFile -Raw | ConvertFrom-Json }
         catch { Write-Log "Cache corrupted, re-downloading..." -Level WARN; return Update-RegistryCache }

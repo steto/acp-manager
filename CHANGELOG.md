@@ -21,6 +21,7 @@ All notable changes to this project are documented in this file.
 - Interactive menus gained entries for Uninstall, Version and UpdateSelf.
 
 ### Fixed
+- **Registry cache was re-downloaded on every run.** `Get-CachedRegistry` used the file's `CreationTime`, which Windows freezes at first creation when `Move-Item -Force` overwrites an existing file. Cache age is now computed from `LastWriteTime`, and `Update-RegistryCache` resets both timestamps after each refresh.
 - Every agent was reported installed whenever the DevTunnels folder existed; the check is now gated on an actual id match.
 - Known-path search no longer scans all of `%USERPROFILE%` for ids shorter than 4 characters.
 - Parameter-binding error in registry uninstall-key matching.
